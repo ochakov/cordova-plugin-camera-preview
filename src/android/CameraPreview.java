@@ -1,12 +1,18 @@
 package com.cordovaplugincamerapreview;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.app.FragmentManager;
 import android.app.FragmentTransaction;
 import android.hardware.Camera;
+import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.Size;
+import android.util.SizeF;
 import android.util.TypedValue;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -57,6 +63,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
   private static final String GET_WHITE_BALANCE_MODE_ACTION = "getWhiteBalanceMode";
   private static final String SET_WHITE_BALANCE_MODE_ACTION = "setWhiteBalanceMode";
   private static final String SET_BACK_BUTTON_CALLBACK = "onBackButton";
+  private static final String GET_CAMERA_CHARACTERISTICS_ACTION = "getCameraCharacteristics";
 
   private static final int CAM_REQ_CODE = 0;
 
@@ -86,7 +93,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
 
     if (START_CAMERA_ACTION.equals(action)) {
       if (cordova.hasPermission(permissions[0])) {
-        return startCamera(args.getInt(0), args.getInt(1), args.getInt(2), args.getInt(3), args.getString(4), args.getBoolean(5), args.getBoolean(6), args.getBoolean(7), args.getString(8), args.getBoolean(9), args.getBoolean(10), callbackContext);
+        return startCamera(args.getInt(0), args.getInt(1), args.getInt(2), args.getInt(3), args.getString(4), args.getBoolean(5), args.getBoolean(6), args.getBoolean(7), args.getString(8), args.getBoolean(9), args.getBoolean(10), args.getBoolean(11), callbackContext);
       } else {
         this.execCallback = callbackContext;
         this.execArgs = args;
@@ -153,7 +160,9 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       return setBackButtonListener(callbackContext);
     } else if (SUPPORTED_COLOR_EFFECTS_ACTION.equals(action)) {
       return getSupportedColorEffects(callbackContext);
-    }
+    } else if (GET_CAMERA_CHARACTERISTICS_ACTION.equals(action)) {
+      return getCameraCharacteristics(callbackContext);
+    }  
     return false;
   }
 
@@ -166,7 +175,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       }
     }
     if (requestCode == CAM_REQ_CODE) {
-      startCamera(this.execArgs.getInt(0), this.execArgs.getInt(1), this.execArgs.getInt(2), this.execArgs.getInt(3), this.execArgs.getString(4), this.execArgs.getBoolean(5), this.execArgs.getBoolean(6), this.execArgs.getBoolean(7), this.execArgs.getString(8), this.execArgs.getBoolean(9), this.execArgs.getBoolean(10), this.execCallback);
+      startCamera(this.execArgs.getInt(0), this.execArgs.getInt(1), this.execArgs.getInt(2), this.execArgs.getInt(3), this.execArgs.getString(4), this.execArgs.getBoolean(5), this.execArgs.getBoolean(6), this.execArgs.getBoolean(7), this.execArgs.getString(8), this.execArgs.getBoolean(9), this.execArgs.getBoolean(10), this.execArgs.getBoolean(11), this.execCallback);
     }
   }
 
@@ -223,7 +232,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     return true;
   }
 
-    private boolean startCamera(int x, int y, int width, int height, String defaultCamera, Boolean tapToTakePicture, Boolean dragEnabled, final Boolean toBack, String alpha, boolean tapFocus, boolean disableExifHeaderStripping, CallbackContext callbackContext) {
+    private boolean startCamera(int x, int y, int width, int height, String defaultCamera, Boolean tapToTakePicture, Boolean dragEnabled, final Boolean toBack, String alpha, boolean tapFocus, boolean disableExifHeaderStripping, boolean storeToFile, CallbackContext callbackContext) {
     Log.d(TAG, "start camera action");
     if (fragment != null) {
       callbackContext.error("Camera already started");
@@ -239,8 +248,8 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     fragment.dragEnabled = dragEnabled;
     fragment.tapToFocus = tapFocus;
     fragment.disableExifHeaderStripping = disableExifHeaderStripping;
+    fragment.storeToFile = storeToFile;
     fragment.toBack = toBack;
-
 
     DisplayMetrics metrics = cordova.getActivity().getResources().getDisplayMetrics();
     // offset
@@ -919,4 +928,66 @@ private boolean getSupportedFocusModes(CallbackContext callbackContext) {
     PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, "Back button pressed");
     tapBackButtonContext.sendPluginResult(pluginResult);
   }
+
+  private boolean getCameraCharacteristics(CallbackContext callbackContext) {
+    if(this.hasCamera(callbackContext) == false){
+      return true;
+    }
+
+    JSONObject data = new JSONObject();
+    JSONArray cameraCharacteristicsArray = new JSONArray();
+	
+    // Get the CameraManager
+    CameraManager cManager = (CameraManager) this.cordova.getActivity().getApplicationContext().getSystemService(Context.CAMERA_SERVICE);
+	
+    try {
+      for (String cameraId : cManager.getCameraIdList()) {
+        CameraCharacteristics characteristics = cManager.getCameraCharacteristics(cameraId);
+	
+	JSONObject cameraData = new JSONObject();
+	
+	// INFO_SUPPORTED_HARDWARE_LEVEL
+	Integer supportLevel = characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+	cameraData.put("INFO_SUPPORTED_HARDWARE_LEVEL", supportLevel);
+	
+	// LENS_FACING
+	Integer lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING);
+	cameraData.put("LENS_FACING", lensFacing);
+	
+	// SENSOR_INFO_PHYSICAL_SIZE
+	SizeF sensorInfoPhysicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+	cameraData.put("SENSOR_INFO_PHYSICAL_SIZE_WIDTH", new Double(sensorInfoPhysicalSize.getWidth()));
+	cameraData.put("SENSOR_INFO_PHYSICAL_SIZE_HEIGHT", new Double(sensorInfoPhysicalSize.getHeight()));
+	
+	// SENSOR_INFO_PIXEL_ARRAY_SIZE
+	Size sensorInfoPixelSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+	cameraData.put("SENSOR_INFO_PIXEL_ARRAY_SIZE_WIDTH", new Integer(sensorInfoPixelSize.getWidth()));
+	cameraData.put("SENSOR_INFO_PIXEL_ARRAY_SIZE_HEIGHT", new Integer(sensorInfoPixelSize.getHeight()));
+	
+	// LENS_INFO_AVAILABLE_FOCAL_LENGTHS
+	float[] focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+	JSONArray focalLengthsArray = new JSONArray();
+	for (int focusId=0; focusId<focalLengths.length; focusId++) {
+	  JSONObject focalLengthsData = new JSONObject();
+	  focalLengthsData.put("FOCAL_LENGTH", new Double(focalLengths[focusId]));
+	  focalLengthsArray.put(focalLengthsData);
+	}
+	cameraData.put("LENS_INFO_AVAILABLE_FOCAL_LENGTHS", focalLengthsArray);
+	
+	// add camera data to result list
+	cameraCharacteristicsArray.put(cameraData);
+      }
+		
+      data.put("CAMERA_CHARACTERISTICS", cameraCharacteristicsArray);
+		
+    } catch (CameraAccessException e) {
+      Log.e(TAG, e.getMessage(), e);
+    } catch (JSONException e) {
+      Log.d(TAG, "getCameraSensorInfo failed to set output payload");
+    }
+
+    callbackContext.success(data);
+    return true;
+  }
+  
 }
