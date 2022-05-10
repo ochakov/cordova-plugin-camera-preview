@@ -330,14 +330,16 @@ public class CameraActivity extends Fragment {
     super.onPause();
 
     // Because the Camera object is a shared resource, it's very important to release it when the activity is paused.
-    if (mCamera != null) {
-      setDefaultCameraId();
-      mPreview.setCamera(null, -1);
-      mCamera.setPreviewCallback(null);
-      mCamera.release();
-      mCamera = null;
+    synchronized (CameraActivity.this) {
+      if (mCamera != null) {
+        setDefaultCameraId();
+        mPreview.setCamera(null, -1);
+        mCamera.setPreviewCallback(null);
+        mCamera.release();
+        mCamera = null;
+        canTakePicture = true;
+      }
     }
-
     Activity activity = getActivity();
     muteStream(false, activity);
   }
@@ -656,23 +658,35 @@ public class CameraActivity extends Fragment {
 
       new Thread() {
         public void run() {
-          Camera.Parameters params = mCamera.getParameters();
+          synchronized (CameraActivity.this) {
+            if (mCamera != null) {
+              try {
+                Camera.Parameters params = mCamera.getParameters();
 
-          Camera.Size size = getOptimalPictureSize(width, height, params.getPreviewSize(), params.getSupportedPictureSizes());
-          params.setPictureSize(size.width, size.height);
-          currentQuality = quality;
+                Camera.Size size = getOptimalPictureSize(width, height, params.getPreviewSize(), params.getSupportedPictureSizes());
+                params.setPictureSize(size.width, size.height);
+                currentQuality = quality;
 
-          if(cameraCurrentlyLocked == Camera.CameraInfo.CAMERA_FACING_FRONT && !storeToFile) {
-            // The image will be recompressed in the callback
-            params.setJpegQuality(99);
-          } else {
-            params.setJpegQuality(quality);
+                if (cameraCurrentlyLocked == Camera.CameraInfo.CAMERA_FACING_FRONT && !storeToFile) {
+                  // The image will be recompressed in the callback
+                  params.setJpegQuality(99);
+                } else {
+                  params.setJpegQuality(quality);
+                }
+
+                params.setRotation(mPreview.getDisplayOrientation());
+
+                mCamera.setParameters(params);
+                mCamera.takePicture(shutterCallback, null, jpegPictureCallback);
+              } catch (Exception e) {
+                eventListener.onPictureTakenError("Exception in TakePicture " + e.getMessage());
+                canTakePicture = true;
+              }
+            } else {
+              eventListener.onPictureTakenError("Camera is null in TakePicture");
+              canTakePicture = true;
+            }
           }
-
-          params.setRotation(mPreview.getDisplayOrientation());
-
-          mCamera.setParameters(params);
-          mCamera.takePicture(shutterCallback, null, jpegPictureCallback);
         }
       }.start();
     } else {
