@@ -355,7 +355,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
         FragmentManager fragmentManager = cordova.getActivity().getFragmentManager();
         FragmentTransaction fragmentTransaction = fragmentManager.beginTransaction();
         fragmentTransaction.add(containerView.getId(), fragment);
-        fragmentTransaction.commit();
+        fragmentTransaction.commitAllowingStateLoss();
       }
     });
 
@@ -1007,7 +1007,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     FragmentManager fragmentManager = cordova.getActivity().getFragmentManager();
     FragmentTransaction fragmentTransaction = fragmentManager.beginTransaction();
     fragmentTransaction.remove(fragment);
-    fragmentTransaction.commit();
+    fragmentTransaction.commitAllowingStateLoss();
     fragment = null;
 
     callbackContext.success();
@@ -1022,7 +1022,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     FragmentManager fragmentManager = cordova.getActivity().getFragmentManager();
     FragmentTransaction fragmentTransaction = fragmentManager.beginTransaction();
     fragmentTransaction.show(fragment);
-    fragmentTransaction.commit();
+    fragmentTransaction.commitAllowingStateLoss();
 
     callbackContext.success();
     return true;
@@ -1036,7 +1036,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     FragmentManager fragmentManager = cordova.getActivity().getFragmentManager();
     FragmentTransaction fragmentTransaction = fragmentManager.beginTransaction();
     fragmentTransaction.hide(fragment);
-    fragmentTransaction.commit();
+    fragmentTransaction.commitAllowingStateLoss();
 
     callbackContext.success();
     return true;
