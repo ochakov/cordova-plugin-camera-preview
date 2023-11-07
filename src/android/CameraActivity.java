@@ -711,7 +711,22 @@ public class CameraActivity extends Fragment {
 
       Camera.Parameters cameraParams = mCamera.getParameters();
       if (withFlash) {
-        cameraParams.setFlashMode(withFlash ? Camera.Parameters.FLASH_MODE_TORCH : Camera.Parameters.FLASH_MODE_OFF);
+        List<String> flashModes = cameraParams.getSupportedFlashModes();
+
+        if (flashModes != null) {
+          Log.d(TAG, "Enabling flash on device");
+
+          if (flashModes.contains(Camera.Parameters.FLASH_MODE_TORCH)) {
+            cameraParams.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
+          } else if (flashModes.contains(Camera.Parameters.FLASH_MODE_ON)) {
+            cameraParams.setFlashMode(Camera.Parameters.FLASH_MODE_ON);
+          } else if (flashModes.contains(Camera.Parameters.FLASH_MODE_AUTO)) {
+            cameraParams.setFlashMode(Camera.Parameters.FLASH_MODE_AUTO);
+          }
+        } else {
+          Log.d(TAG, "Flash not supported on device");
+        }
+
         mCamera.setParameters(cameraParams);
         mCamera.startPreview();
       }
@@ -752,8 +767,21 @@ public class CameraActivity extends Fragment {
         Log.d(TAG, "Starting recording");
         mRecorder.start();
         eventListener.onStartRecordVideo();
-      } catch (IOException e) {
-        eventListener.onStartRecordVideoError(e.getMessage());
+      } catch (IOException ioException) {
+        Log.e(TAG, "Recording failed, file issue", ioException);
+        eventListener.onStartRecordVideoError(ioException.getMessage());
+
+        mRecorder = null;
+      } catch (IllegalStateException stateException) {
+        Log.e(TAG, "Recording failed, audio/video may be in use by another application", stateException);
+        eventListener.onStartRecordVideoError("Failed to start recording, your audio or video may be in use by another application");
+
+        mRecorder = null;
+      } catch (Exception exception) {
+        Log.e(TAG, "Recording failed, unknown", exception);
+        eventListener.onStartRecordVideoError(exception.getMessage());
+
+        mRecorder = null;
       }
     } else {
       Log.d(TAG, "Requiring RECORD_AUDIO permission to continue");
