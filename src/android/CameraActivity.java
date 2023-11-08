@@ -359,11 +359,13 @@ public class CameraActivity extends Fragment {
       Log.d(TAG, "numberOfCameras: " + numberOfCameras);
 
       // OK, we have multiple cameras. Release this camera -> cameraCurrentlyLocked
-      if (mCamera != null) {
-        mCamera.stopPreview();
-        mPreview.setCamera(null, -1);
-        mCamera.release();
-        mCamera = null;
+      synchronized (CameraActivity.this) {
+        if (mCamera != null) {
+          mCamera.stopPreview();
+          mPreview.setCamera(null, -1);
+          mCamera.release();
+          mCamera = null;
+		}
       }
 
       Log.d(TAG, "cameraCurrentlyLocked := " + Integer.toString(cameraCurrentlyLocked));
