@@ -284,44 +284,54 @@ public class CameraActivity extends Fragment {
   public void onResume() {
     super.onResume();
 
-    mCamera = Camera.open(defaultCameraId);
-
-    if (cameraParameters != null) {
-      mCamera.setParameters(cameraParameters);
-    }
-
-    cameraCurrentlyLocked = defaultCameraId;
-
-    if(mPreview.mPreviewSize == null){
-      mPreview.setCamera(mCamera, cameraCurrentlyLocked);
-      eventListener.onCameraStarted();
-    } else {
-      mPreview.switchCamera(mCamera, cameraCurrentlyLocked);
-      mCamera.startPreview();
-    }
-
-    Log.d(TAG, "cameraCurrentlyLocked:" + cameraCurrentlyLocked);
-
-    final FrameLayout frameContainerLayout = (FrameLayout) view.findViewById(getResources().getIdentifier("frame_container", "id", appResourcesPackage));
-
-    ViewTreeObserver viewTreeObserver = frameContainerLayout.getViewTreeObserver();
-
-    if (viewTreeObserver.isAlive()) {
-      viewTreeObserver.addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-        @Override
-        public void onGlobalLayout() {
-          frameContainerLayout.getViewTreeObserver().removeGlobalOnLayoutListener(this);
-          frameContainerLayout.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-          Activity activity = getActivity();
-          if (isAdded() && activity != null) {
-            final RelativeLayout frameCamContainerLayout = (RelativeLayout) view.findViewById(getResources().getIdentifier("frame_camera_cont", "id", appResourcesPackage));
-
-            FrameLayout.LayoutParams camViewLayout = new FrameLayout.LayoutParams(frameContainerLayout.getWidth(), frameContainerLayout.getHeight());
-            camViewLayout.gravity = Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL;
-            frameCamContainerLayout.setLayoutParams(camViewLayout);
-          }
+    synchronized (CameraActivity.this) {
+      if (mCamera == null) {
+        try {
+          mCamera = Camera.open(defaultCameraId);
+        } catch (Exception e) {
+          Log.e(TAG, "Cannot open camera on resume", e);
         }
-      });
+      }
+
+      if (mCamera != null) {
+        if (cameraParameters != null) {
+          mCamera.setParameters(cameraParameters);
+        }
+
+        cameraCurrentlyLocked = defaultCameraId;
+
+        if(mPreview.mPreviewSize == null){
+          mPreview.setCamera(mCamera, cameraCurrentlyLocked);
+          eventListener.onCameraStarted();
+        } else {
+          mPreview.switchCamera(mCamera, cameraCurrentlyLocked);
+          mCamera.startPreview();
+        }
+
+        Log.d(TAG, "cameraCurrentlyLocked:" + cameraCurrentlyLocked);
+
+        final FrameLayout frameContainerLayout = (FrameLayout) view.findViewById(getResources().getIdentifier("frame_container", "id", appResourcesPackage));
+
+        ViewTreeObserver viewTreeObserver = frameContainerLayout.getViewTreeObserver();
+
+        if (viewTreeObserver.isAlive()) {
+          viewTreeObserver.addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+              frameContainerLayout.getViewTreeObserver().removeGlobalOnLayoutListener(this);
+              frameContainerLayout.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+              Activity activity = getActivity();
+              if (isAdded() && activity != null) {
+                final RelativeLayout frameCamContainerLayout = (RelativeLayout) view.findViewById(getResources().getIdentifier("frame_camera_cont", "id", appResourcesPackage));
+
+                FrameLayout.LayoutParams camViewLayout = new FrameLayout.LayoutParams(frameContainerLayout.getWidth(), frameContainerLayout.getHeight());
+                camViewLayout.gravity = Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL;
+                frameCamContainerLayout.setLayoutParams(camViewLayout);
+              }
+            }
+          });
+        }
+      }
     }
   }
 
