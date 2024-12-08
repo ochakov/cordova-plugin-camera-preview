@@ -108,6 +108,10 @@ public class CameraActivity extends Fragment {
   private MediaRecorder mRecorder = null;
   private String recordFilePath;
 
+  public CameraActivity() {
+    
+  }
+  
   public void setEventListener(CameraPreviewListener listener){
     eventListener = listener;
   }
