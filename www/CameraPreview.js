@@ -70,6 +70,18 @@ CameraPreview.switchCamera = function(onSuccess, onError) {
   exec(onSuccess, onError, PLUGIN_NAME, "switchCamera", []);
 };
 
+CameraPreview.switchFocalLength = function(onSuccess, onError) {
+  exec(onSuccess, onError, PLUGIN_NAME, "switchFocalLength", []);
+};
+
+CameraPreview.getCurrentFocalLength = function(onSuccess, onError) {
+  exec(onSuccess, onError, PLUGIN_NAME, "getCurrentFocalLength", []);
+};
+
+CameraPreview.getAvailableFocalLengths = function(onSuccess, onError) {
+  exec(onSuccess, onError, PLUGIN_NAME, "getAvailableFocalLengths", []);
+};
+
 CameraPreview.hide = function(onSuccess, onError) {
   exec(onSuccess, onError, PLUGIN_NAME, "hideCamera", []);
 };

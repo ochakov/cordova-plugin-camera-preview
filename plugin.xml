@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<plugin id="cordova-plugin-camera-preview" version="0.14.0" xmlns="http://apache.org/cordova/ns/plugins/1.0" xmlns:android="http://schemas.android.com/apk/res/android">
+<plugin id="cordova-plugin-camera-preview" version="0.20.1" xmlns="http://apache.org/cordova/ns/plugins/1.0" xmlns:android="http://schemas.android.com/apk/res/android">
 
    <name>cordova-plugin-camera-preview</name>
   <description>Cordova plugin that allows camera interaction from HTML code. Show camera preview popup on top of the HTML.</description>
@@ -16,7 +16,6 @@
   <platform name="android">
     <source-file src="src/android/CameraPreview.java" target-dir="src/com/cordovaplugincamerapreview" />
     <source-file src="src/android/CameraActivity.java" target-dir="src/com/cordovaplugincamerapreview" />
-    <source-file src="src/android/CustomSurfaceView.java" target-dir="src/com/cordovaplugincamerapreview" />
     <source-file src="src/android/Preview.java" target-dir="src/com/cordovaplugincamerapreview" />
     <source-file src="src/android/TapGestureDetector.java" target-dir="src/com/cordovaplugincamerapreview" />
     <source-file src="src/android/camera_activity.xml" target-dir="res/layout" />
@@ -37,11 +36,14 @@
       <uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>
       <uses-permission android:name="android.permission.CAMERA" />
       <uses-permission android:name="android.permission.RECORD_AUDIO" />
-      <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+      <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+      <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+      <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+
     </config-file>
 
     <config-file target="AndroidManifest.xml" parent="/manifest/application">
-      <activity android:name="com.cordovaplugincamerapreview.CameraActivity" android:screenOrientation="portrait" android:theme="@style/CameraPreviewTheme" />
+      <activity android:name="com.cordovaplugincamerapreview.CameraActivity" android:exported="true" android:screenOrientation="portrait" android:theme="@style/CameraPreviewTheme" />
     </config-file>
   </platform>
 

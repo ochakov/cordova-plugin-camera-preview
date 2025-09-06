@@ -43,6 +43,9 @@ declare module 'cordova-plugin-camera-preview' {
     startCamera(options?: CameraPreviewStartCameraOptions, onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
     stopCamera(onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
     switchCamera(onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
+    switchFocalLength(onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
+    getCurrentFocalLength(onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
+    getAvailableFocalLengths(onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
     hide(onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
     show(onSuccess?: CameraPreviewSuccessHandler, onError?: CameraPreviewErrorHandler): void;
     takePicture(options?: CameraPreviewTakePictureOptions|CameraPreviewSuccessHandler, onSuccess?: CameraPreviewSuccessHandler|CameraPreviewErrorHandler, onError?: CameraPreviewErrorHandler): void;
