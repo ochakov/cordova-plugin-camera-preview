@@ -221,6 +221,125 @@
   });
 }
 
+- (void) switchFocalLength:(void(^)(BOOL switched))completion {
+  if (self.availableFocalLengths == nil || [self.availableFocalLengths count] <= 1) {
+    NSLog(@"Cannot switch focal length: no focal lengths available or only one focal length");
+    completion(FALSE);
+    return;
+  }
+  
+  // Cycle to next focal length
+  self.currentFocalLengthIndex = (self.currentFocalLengthIndex + 1) % [self.availableFocalLengths count];
+  NSNumber *targetFocalLength = [self.availableFocalLengths objectAtIndex:self.currentFocalLengthIndex];
+  
+  NSLog(@"Switching to focal length: %@mm (index: %ld)", targetFocalLength, (long)self.currentFocalLengthIndex);
+  
+  dispatch_async([self sessionQueue], ^{
+    NSError *error = nil;
+    BOOL success = TRUE;
+    
+    [self.device lockForConfiguration:&error];
+    if (error) {
+      NSLog(@"Failed to lock device for focal length configuration: %@", error);
+      success = FALSE;
+    } else {
+      // Calculate zoom ratio based on focal length
+      NSNumber *defaultFocalLength = [self.availableFocalLengths objectAtIndex:0];
+      CGFloat zoomRatio = [targetFocalLength floatValue] / [defaultFocalLength floatValue];
+      
+      // Apply zoom using existing setZoom method
+      self.videoZoomFactor = MAX(1.0, MIN(zoomRatio, self.device.activeFormat.videoMaxZoomFactor));
+      [self.device setVideoZoomFactor:self.videoZoomFactor];
+      
+      [self.device unlockForConfiguration];
+    }
+    
+    completion(success);
+  });
+}
+
+- (NSArray *) getAvailableFocalLengths {
+  if (self.availableFocalLengths == nil) {
+    [self initializeFocalLengths];
+  }
+  return self.availableFocalLengths;
+}
+
+- (float) getCurrentFocalLength {
+  if (self.availableFocalLengths != nil && self.currentFocalLengthIndex >= 0 && self.currentFocalLengthIndex < [self.availableFocalLengths count]) {
+    NSNumber *focalLength = [self.availableFocalLengths objectAtIndex:self.currentFocalLengthIndex];
+    return [focalLength floatValue];
+  }
+  return 0.0f;
+}
+
+- (void) setFocalLength:(float)focalLength {
+  if (self.availableFocalLengths == nil) {
+    [self initializeFocalLengths];
+  }
+  
+  // Find the closest available focal length
+  NSInteger closestIndex = 0;
+  float minDifference = FLT_MAX;
+  
+  for (NSInteger i = 0; i < [self.availableFocalLengths count]; i++) {
+    NSNumber *availableFocalLength = [self.availableFocalLengths objectAtIndex:i];
+    float difference = fabsf([availableFocalLength floatValue] - focalLength);
+    if (difference < minDifference) {
+      minDifference = difference;
+      closestIndex = i;
+    }
+  }
+  
+  self.currentFocalLengthIndex = closestIndex;
+  NSNumber *targetFocalLength = [self.availableFocalLengths objectAtIndex:closestIndex];
+  
+  dispatch_async([self sessionQueue], ^{
+    NSError *error = nil;
+    [self.device lockForConfiguration:&error];
+    if (!error) {
+      // Calculate zoom ratio based on focal length
+      NSNumber *defaultFocalLength = [self.availableFocalLengths objectAtIndex:0];
+      CGFloat zoomRatio = [targetFocalLength floatValue] / [defaultFocalLength floatValue];
+      
+      // Apply zoom using existing setZoom method
+      self.videoZoomFactor = MAX(1.0, MIN(zoomRatio, self.device.activeFormat.videoMaxZoomFactor));
+      [self.device setVideoZoomFactor:self.videoZoomFactor];
+      
+      [self.device unlockForConfiguration];
+    }
+  });
+}
+
+- (void) initializeFocalLengths {
+  if (self.device == nil) {
+    return;
+  }
+  
+  NSMutableArray *focalLengths = [[NSMutableArray alloc] init];
+  
+  // Create virtual focal lengths based on zoom capabilities
+  // Since we're implementing virtual cameras, we'll create focal lengths based on zoom range
+  CGFloat maxZoom = self.device.activeFormat.videoMaxZoomFactor;
+  NSInteger numFocalLengths = MIN(5, (NSInteger)maxZoom); // Create up to 5 virtual focal lengths
+  
+  for (NSInteger i = 0; i < numFocalLengths; i++) {
+    CGFloat zoomFactor = 1.0 + (i * (maxZoom - 1.0) / (numFocalLengths - 1));
+    NSNumber *virtualFocalLength = [NSNumber numberWithFloat:zoomFactor];
+    [focalLengths addObject:virtualFocalLength];
+  }
+  
+  // Sort focal lengths
+  [focalLengths sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+    return [a compare:b];
+  }];
+  
+  self.availableFocalLengths = [focalLengths copy];
+  self.currentFocalLengthIndex = 0; // Start with the first (usually widest) focal length
+  
+  NSLog(@"Initialized focal lengths: %@", self.availableFocalLengths);
+}
+
 - (NSArray *)getFocusModes {
 
   NSMutableArray * focusModes = [[NSMutableArray alloc] init];

@@ -27,6 +27,9 @@
 - (void) getExposureCompensationRange:(CDVInvokedUrlCommand*)command;
 - (void) setPreviewSize: (CDVInvokedUrlCommand*)command;
 - (void) switchCamera:(CDVInvokedUrlCommand*)command;
+- (void) switchFocalLength:(CDVInvokedUrlCommand*)command;
+- (void) getCurrentFocalLength:(CDVInvokedUrlCommand*)command;
+- (void) getAvailableFocalLengths:(CDVInvokedUrlCommand*)command;
 - (void) takePicture:(CDVInvokedUrlCommand*)command;
 - (void) takeSnapshot:(CDVInvokedUrlCommand*)command;
 - (void) setColorEffect:(CDVInvokedUrlCommand*)command;

@@ -150,6 +150,52 @@
   }
 }
 
+- (void) switchFocalLength:(CDVInvokedUrlCommand*)command {
+  NSLog(@"switchFocalLength");
+  CDVPluginResult *pluginResult;
+
+  if (self.sessionManager != nil) {
+    [self.sessionManager switchFocalLength:^(BOOL switched) {
+      if (switched) {
+        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK] callbackId:command.callbackId];
+      } else {
+        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Failed to switch focal length"] callbackId:command.callbackId];
+      }
+    }];
+  } else {
+    pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Session not started"];
+    [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+  }
+}
+
+- (void) getCurrentFocalLength:(CDVInvokedUrlCommand*)command {
+  NSLog(@"getCurrentFocalLength");
+  CDVPluginResult *pluginResult;
+
+  if (self.sessionManager != nil) {
+    float currentFocalLength = [self.sessionManager getCurrentFocalLength];
+    pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDouble:currentFocalLength];
+  } else {
+    pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Session not started"];
+  }
+
+  [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+}
+
+- (void) getAvailableFocalLengths:(CDVInvokedUrlCommand*)command {
+  NSLog(@"getAvailableFocalLengths");
+  CDVPluginResult *pluginResult;
+
+  if (self.sessionManager != nil) {
+    NSArray *focalLengths = [self.sessionManager getAvailableFocalLengths];
+    pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsArray:focalLengths];
+  } else {
+    pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Session not started"];
+  }
+
+  [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+}
+
 - (void) getSupportedFocusModes:(CDVInvokedUrlCommand*)command {
   CDVPluginResult *pluginResult;
 

@@ -17,6 +17,10 @@
 - (NSInteger) getFlashMode;
 - (void) setupSession:(NSString *)defaultCamera completion:(void(^)(BOOL started))completion;
 - (void) switchCamera:(void(^)(BOOL switched))completion;
+- (void) switchFocalLength:(void(^)(BOOL switched))completion;
+- (NSArray *) getAvailableFocalLengths;
+- (float) getCurrentFocalLength;
+- (void) setFocalLength:(float)focalLength;
 - (void) setFlashMode:(NSInteger)flashMode;
 - (void) setZoom:(CGFloat)desiredZoomFactor;
 - (CGFloat) getZoom;
@@ -52,4 +56,6 @@
 @property (nonatomic, assign) id delegate;
 @property (nonatomic) NSString *currentWhiteBalanceMode;
 @property (nonatomic) NSDictionary *colorTemperatures;
+@property (nonatomic) NSArray *availableFocalLengths;
+@property (nonatomic) NSInteger currentFocalLengthIndex;
 @end
