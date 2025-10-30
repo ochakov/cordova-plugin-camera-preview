@@ -820,17 +820,23 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         if (!canTakePicture) {
             if (retryCount < 100) {
                 // Retry after 50 milliseconds
-                Log.d(TAG, "takePicture - canTakePicture is false, retrying in 50ms (attempt " + (retryCount + 1) + "/10)");
-                if (mBackgroundHandler != null) {
-                    mBackgroundHandler.postDelayed(new Runnable() {
+                Log.d(TAG, "takePicture - canTakePicture is false, retrying in 50ms (attempt " + (retryCount + 1) + "/100)");
+                Handler backgroundHandler = mPreview.getBackgroundHandler();
+                if (backgroundHandler != null) {
+                    backgroundHandler.postDelayed(new Runnable() {
                         @Override
                         public void run() {
                             takePictureInternal(width, height, quality, retryCount + 1);
                         }
                     }, 50);
+                } else {
+                    Log.e(TAG, "takePicture - Background handler is null, cannot retry");
+                    if (eventListener != null) {
+                        eventListener.onPictureTakenError("Camera is not ready");
+                    }
                 }
             } else {
-                Log.d(TAG, "takePicture - Blocked: canTakePicture is false after 10 retries");
+                Log.d(TAG, "takePicture - Blocked: canTakePicture is false after 100 retries");
                 if (eventListener != null) {
                     eventListener.onPictureTakenError("Camera is busy, could not take picture");
                 }

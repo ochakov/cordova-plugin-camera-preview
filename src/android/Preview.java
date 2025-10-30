@@ -52,6 +52,7 @@ class Preview extends RelativeLayout {
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
     private Semaphore mCameraOpenCloseLock = new Semaphore(1);
+    private final Object mSessionLock = new Object(); // Lock for session access
 
     private String mCameraId;
     private CameraCharacteristics mCharacteristics;
@@ -207,9 +208,11 @@ class Preview extends RelativeLayout {
     public void closeCamera() {
         try {
             mCameraOpenCloseLock.acquire();
-            if (null != mCaptureSession) {
-                mCaptureSession.close();
-                mCaptureSession = null;
+            synchronized (mSessionLock) {
+                if (null != mCaptureSession) {
+                    mCaptureSession.close();
+                    mCaptureSession = null;
+                }
             }
             if (null != mCameraDevice) {
                 mCameraDevice.close();
@@ -231,7 +234,9 @@ class Preview extends RelativeLayout {
     }
 
     public void setCaptureSession(CameraCaptureSession session) {
-        mCaptureSession = session;
+        synchronized (mSessionLock) {
+            mCaptureSession = session;
+        }
     }
 
     public void resumePreview() {
@@ -491,19 +496,23 @@ class Preview extends RelativeLayout {
                                 return;
                             }
 
-                            // When the session is ready, we start displaying the preview.
-                            mCaptureSession = cameraCaptureSession;
-                            try {
-                                // Auto focus should be continuous for camera preview.
-                                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
-                                        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+                            synchronized (mSessionLock) {
+                                // When the session is ready, we start displaying the preview.
+                                mCaptureSession = cameraCaptureSession;
+                                try {
+                                    // Auto focus should be continuous for camera preview.
+                                    mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
+                                            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
 
-                                // Finally, we start displaying the camera preview.
-                                mPreviewRequest = mPreviewRequestBuilder.build();
-                                mCaptureSession.setRepeatingRequest(mPreviewRequest,
-                                        null, mBackgroundHandler);
-                            } catch (CameraAccessException e) {
-                                Log.e(TAG, "Failed to set up camera preview", e);
+                                    // Finally, we start displaying the camera preview.
+                                    mPreviewRequest = mPreviewRequestBuilder.build();
+                                    mCaptureSession.setRepeatingRequest(mPreviewRequest,
+                                            null, mBackgroundHandler);
+                                } catch (CameraAccessException e) {
+                                    Log.e(TAG, "Failed to set up camera preview", e);
+                                } catch (IllegalStateException e) {
+                                    Log.e(TAG, "Failed to set up camera preview", e);
+                                }
                             }
                         }
 
@@ -531,7 +540,9 @@ class Preview extends RelativeLayout {
     }
 
     public CameraCaptureSession getCaptureSession() {
-        return mCaptureSession;
+        synchronized (mSessionLock) {
+            return mCaptureSession;
+        }
     }
 
     public CaptureRequest.Builder getPreviewRequestBuilder() {
