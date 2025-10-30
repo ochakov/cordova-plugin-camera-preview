@@ -99,6 +99,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     private boolean mFlashSupported;
     private int mState = STATE_PREVIEW;
     private Semaphore mCameraOpenCloseLock = new Semaphore(1);
+    private final Object mImageReaderLock = new Object(); // Lock for ImageReader access
     private String currentFlashMode = "auto"; // Track current flash mode
 
     private int numberOfCameras;
@@ -414,42 +415,44 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
 
         // Set up ImageReader before the session is created
         try {
-            // Close existing ImageReader if any
-            if (mImageReader != null) {
-                mImageReader.close();
-                mImageReader = null;
-            }
-
-            CameraCharacteristics characteristics = mPreview.getCharacteristics();
-            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            if (map != null) {
-                Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
-                Size previewSize = mPreview.getPreviewSize();
-
-                // Choose an optimal picture size based on preview size
-                // This ensures the aspect ratio matches and the size is appropriate
-                if (previewSize != null) {
-                    // Find a JPEG size that matches or is close to the preview aspect ratio
-                    // but is larger for better quality
-                    mImageSize = chooseOptimalPictureSize(jpegSizes, previewSize);
-                } else {
-                    // Fallback: use the largest available size
-                    mImageSize = jpegSizes[0];
-                    for (Size size : jpegSizes) {
-                        if (size.getWidth() * size.getHeight() > mImageSize.getWidth() * mImageSize.getHeight()) {
-                            mImageSize = size;
-                        }
-                    }
+            synchronized (mImageReaderLock) {
+                // Close existing ImageReader if any
+                if (mImageReader != null) {
+                    mImageReader.close();
+                    mImageReader = null;
                 }
 
-                Log.d(TAG, "onCameraDeviceOpened - Creating ImageReader with size: " + mImageSize.getWidth() + "x" + mImageSize.getHeight());
+                CameraCharacteristics characteristics = mPreview.getCharacteristics();
+                StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map != null) {
+                    Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
+                    Size previewSize = mPreview.getPreviewSize();
 
-                mImageReader = ImageReader.newInstance(mImageSize.getWidth(), mImageSize.getHeight(), ImageFormat.JPEG, 2);
-                mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, mPreview.getBackgroundHandler());
+                    // Choose an optimal picture size based on preview size
+                    // This ensures the aspect ratio matches and the size is appropriate
+                    if (previewSize != null) {
+                        // Find a JPEG size that matches or is close to the preview aspect ratio
+                        // but is larger for better quality
+                        mImageSize = chooseOptimalPictureSize(jpegSizes, previewSize);
+                    } else {
+                        // Fallback: use the largest available size
+                        mImageSize = jpegSizes[0];
+                        for (Size size : jpegSizes) {
+                            if (size.getWidth() * size.getHeight() > mImageSize.getWidth() * mImageSize.getHeight()) {
+                                mImageSize = size;
+                            }
+                        }
+                    }
 
-                // Create the session with both preview and ImageReader surfaces
-                List<Surface> additionalSurfaces = Arrays.asList(mImageReader.getSurface());
-                mPreview.createCameraPreviewSession(additionalSurfaces);
+                    Log.d(TAG, "onCameraDeviceOpened - Creating ImageReader with size: " + mImageSize.getWidth() + "x" + mImageSize.getHeight());
+
+                    mImageReader = ImageReader.newInstance(mImageSize.getWidth(), mImageSize.getHeight(), ImageFormat.JPEG, 2);
+                    mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, mPreview.getBackgroundHandler());
+
+                    // Create the session with both preview and ImageReader surfaces
+                    List<Surface> additionalSurfaces = Arrays.asList(mImageReader.getSurface());
+                    mPreview.createCameraPreviewSession(additionalSurfaces);
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to setup ImageReader", e);
@@ -488,10 +491,12 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         canTakePicture = false;
 
         // Close ImageReader since we're switching cameras
-        if (mImageReader != null) {
-            mImageReader.close();
-            mImageReader = null;
-            mImageSize = null;
+        synchronized (mImageReaderLock) {
+            if (mImageReader != null) {
+                mImageReader.close();
+                mImageReader = null;
+                mImageSize = null;
+            }
         }
 
         if (mPreview != null) {
@@ -615,10 +620,12 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                 canTakePicture = false;
 
                 // Close ImageReader since we're switching cameras
-                if (mImageReader != null) {
-                    mImageReader.close();
-                    mImageReader = null;
-                    mImageSize = null;
+                synchronized (mImageReaderLock) {
+                    if (mImageReader != null) {
+                        mImageReader.close();
+                        mImageReader = null;
+                        mImageSize = null;
+                    }
                 }
 
                 // Close current camera
@@ -850,49 +857,58 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         try {
             // Check if we need to create/recreate the ImageReader
             boolean needsNewImageReader = false;
+            ImageReader imageReaderToUse = null;
 
-            CameraCharacteristics characteristics = mPreview.getCharacteristics();
-            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            if (map != null) {
-                Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
-                Size optimalSize;
+            synchronized (mImageReaderLock) {
+                CameraCharacteristics characteristics = mPreview.getCharacteristics();
+                StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map != null) {
+                    Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
+                    Size optimalSize;
 
-                // If specific width/height requested, use getOptimalPictureSize
-                // Otherwise, use chooseOptimalPictureSize to match preview aspect ratio
-                // (same logic as when ImageReader was created in onCameraDeviceOpened)
-                if (width > 0 && height > 0) {
-                    optimalSize = getOptimalPictureSize(width, height, mPreview.getPreviewSize(), Arrays.asList(jpegSizes));
-                } else {
-                    optimalSize = chooseOptimalPictureSize(jpegSizes, mPreview.getPreviewSize());
+                    // If specific width/height requested, use getOptimalPictureSize
+                    // Otherwise, use chooseOptimalPictureSize to match preview aspect ratio
+                    // (same logic as when ImageReader was created in onCameraDeviceOpened)
+                    if (width > 0 && height > 0) {
+                        optimalSize = getOptimalPictureSize(width, height, mPreview.getPreviewSize(), Arrays.asList(jpegSizes));
+                    } else {
+                        optimalSize = chooseOptimalPictureSize(jpegSizes, mPreview.getPreviewSize());
+                    }
+
+                    // Check if ImageReader exists and has the right size
+                    if (mImageReader == null ||
+                        mImageSize == null ||
+                        mImageSize.getWidth() != optimalSize.getWidth() ||
+                        mImageSize.getHeight() != optimalSize.getHeight()) {
+                        needsNewImageReader = true;
+                        mImageSize = optimalSize;
+                        Log.d(TAG, "takePicture - ImageReader size mismatch. Old: " +
+                            (mImageSize != null ? mImageSize.getWidth() + "x" + mImageSize.getHeight() : "null") +
+                            ", New: " + optimalSize.getWidth() + "x" + optimalSize.getHeight());
+                    }
                 }
 
-                // Check if ImageReader exists and has the right size
-                if (mImageReader == null ||
-                    mImageSize == null ||
-                    mImageSize.getWidth() != optimalSize.getWidth() ||
-                    mImageSize.getHeight() != optimalSize.getHeight()) {
-                    needsNewImageReader = true;
-                    mImageSize = optimalSize;
-                    Log.d(TAG, "takePicture - ImageReader size mismatch. Old: " +
-                        (mImageSize != null ? mImageSize.getWidth() + "x" + mImageSize.getHeight() : "null") +
-                        ", New: " + optimalSize.getWidth() + "x" + optimalSize.getHeight());
+                if (needsNewImageReader) {
+                    Log.d(TAG, "takePicture - Creating new ImageReader and session");
+
+                    // Close existing ImageReader if any
+                    if (mImageReader != null) {
+                        mImageReader.close();
+                    }
+
+                    mImageReader = ImageReader.newInstance(mImageSize.getWidth(), mImageSize.getHeight(), ImageFormat.JPEG, 2);
+                    mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, mPreview.getBackgroundHandler());
+                    imageReaderToUse = mImageReader;
+                } else {
+                    Log.d(TAG, "takePicture - Reusing existing ImageReader and session");
+                    imageReaderToUse = mImageReader;
                 }
             }
 
             if (needsNewImageReader) {
-                Log.d(TAG, "takePicture - Creating new ImageReader and session");
-
-                // Close existing ImageReader if any
-                if (mImageReader != null) {
-                    mImageReader.close();
-                }
-
-                mImageReader = ImageReader.newInstance(mImageSize.getWidth(), mImageSize.getHeight(), ImageFormat.JPEG, 2);
-                mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, mPreview.getBackgroundHandler());
-
                 // Create a new capture session with both preview and ImageReader surfaces
                 Surface previewSurface = mPreview.getPreviewSurface();
-                List<Surface> surfaces = Arrays.asList(previewSurface, mImageReader.getSurface());
+                List<Surface> surfaces = Arrays.asList(previewSurface, imageReaderToUse.getSurface());
 
                 mPreview.getCameraDevice().createCaptureSession(surfaces,
                         new CameraCaptureSession.StateCallback() {
@@ -993,17 +1009,21 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         try {
             Log.d(TAG, "captureStillPictureWithoutRecreatingSession - Starting capture");
 
-            if (mImageReader == null) {
-                Log.e(TAG, "captureStillPictureWithoutRecreatingSession - ImageReader is null!");
-                if (eventListener != null) {
-                    eventListener.onPictureTakenError("ImageReader not initialized");
+            ImageReader imageReaderToUse;
+            synchronized (mImageReaderLock) {
+                if (mImageReader == null) {
+                    Log.e(TAG, "captureStillPictureWithoutRecreatingSession - ImageReader is null!");
+                    if (eventListener != null) {
+                        eventListener.onPictureTakenError("ImageReader not initialized");
+                    }
+                    canTakePicture = true;
+                    return;
                 }
-                canTakePicture = true;
-                return;
+                imageReaderToUse = mImageReader;
             }
 
             CaptureRequest.Builder captureBuilder = mPreview.getCameraDevice().createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(mImageReader.getSurface());
+            captureBuilder.addTarget(imageReaderToUse.getSurface());
 
             // Auto focus
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);

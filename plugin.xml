@@ -43,7 +43,7 @@
     </config-file>
 
     <config-file target="AndroidManifest.xml" parent="/manifest/application">
-      <activity android:name="com.cordovaplugincamerapreview.CameraActivity" android:exported="true" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|density|screenLayout|uimode" android:theme="@style/CameraPreviewTheme" />
+      <activity android:name="com.cordovaplugincamerapreview.CameraActivity" android:exported="true" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|density|screenLayout|uiMode" android:theme="@style/CameraPreviewTheme" />
     </config-file>
   </platform>
 
