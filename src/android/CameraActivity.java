@@ -802,7 +802,11 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     }
 
     public void takePicture(final int width, final int height, final int quality) {
-        Log.d(TAG, "CameraPreview takePicture width: " + width + ", height: " + height + ", quality: " + quality);
+        takePictureInternal(width, height, quality, 0);
+    }
+
+    private void takePictureInternal(final int width, final int height, final int quality, final int retryCount) {
+        Log.d(TAG, "CameraPreview takePicture width: " + width + ", height: " + height + ", quality: " + quality + ", retryCount: " + retryCount);
         Log.d(TAG, "takePicture - Current camera ID: " + mCameraId);
         Log.d(TAG, "takePicture - Preview camera ID: " + mPreview.getCameraId());
 
@@ -814,7 +818,23 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         }
 
         if (!canTakePicture) {
-            Log.d(TAG, "takePicture - Blocked: canTakePicture is false");
+            if (retryCount < 100) {
+                // Retry after 50 milliseconds
+                Log.d(TAG, "takePicture - canTakePicture is false, retrying in 50ms (attempt " + (retryCount + 1) + "/10)");
+                if (mBackgroundHandler != null) {
+                    mBackgroundHandler.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            takePictureInternal(width, height, quality, retryCount + 1);
+                        }
+                    }, 50);
+                }
+            } else {
+                Log.d(TAG, "takePicture - Blocked: canTakePicture is false after 10 retries");
+                if (eventListener != null) {
+                    eventListener.onPictureTakenError("Camera is busy, could not take picture");
+                }
+            }
             return;
         }
 
