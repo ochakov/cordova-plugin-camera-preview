@@ -12,7 +12,6 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
-import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Handler;
@@ -23,7 +22,6 @@ import android.util.SparseIntArray;
 import android.view.Surface;
 import android.view.TextureView;
 import android.widget.RelativeLayout;
-import org.apache.cordova.LOG;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -35,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 
 class Preview extends RelativeLayout {
     private final String TAG = "Preview";
-    
+
     private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
     static {
         ORIENTATIONS.append(Surface.ROTATION_0, 90);
@@ -54,13 +52,13 @@ class Preview extends RelativeLayout {
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
     private Semaphore mCameraOpenCloseLock = new Semaphore(1);
-    
+
     private String mCameraId;
     private CameraCharacteristics mCharacteristics;
     private int mSensorOrientation;
     private boolean mFlashSupported;
     private int mState = STATE_PREVIEW;
-    
+
     private static final int STATE_PREVIEW = 0;
     private static final int STATE_WAITING_LOCK = 1;
     private static final int STATE_WAITING_PRECAPTURE = 2;
@@ -70,8 +68,9 @@ class Preview extends RelativeLayout {
     public interface PreviewCallback {
         void onCameraOpened();
         void onCameraError(String error);
+        void onCameraDeviceOpened(); // Called before session is created
     }
-    
+
     private PreviewCallback mCallback;
 
     Preview(Context context) {
@@ -80,9 +79,19 @@ class Preview extends RelativeLayout {
         addView(mTextureView);
         requestLayout();
     }
-    
+
     public void setPreviewCallback(PreviewCallback callback) {
         mCallback = callback;
+    }
+
+    @Override
+    public void setOnTouchListener(OnTouchListener listener) {
+        // Set the touch listener on the texture view instead of the preview container
+        // This ensures touch events on the camera preview are captured
+        if (mTextureView != null) {
+            mTextureView.setOnTouchListener(listener);
+        }
+        super.setOnTouchListener(listener);
     }
 
     private final TextureView.SurfaceTextureListener mSurfaceTextureListener = new TextureView.SurfaceTextureListener() {
@@ -111,7 +120,19 @@ class Preview extends RelativeLayout {
         public void onOpened(CameraDevice cameraDevice) {
             mCameraOpenCloseLock.release();
             mCameraDevice = cameraDevice;
-            createCameraPreviewSession();
+
+            // Notify callback that camera device is opened (before session creation)
+            // This allows setting up ImageReader surface and creating the session
+            // The callback should call createCameraPreviewSession() with any additional surfaces
+            if (mCallback != null) {
+                mCallback.onCameraDeviceOpened();
+            }
+
+            // Don't create session here - let the callback do it
+            // This allows the callback to add additional surfaces like ImageReader
+            // If callback doesn't create session, we'll create a basic one
+            // (This is handled by the callback calling createCameraPreviewSession)
+
             if (mCallback != null) {
                 mCallback.onCameraOpened();
             }
@@ -161,13 +182,13 @@ class Preview extends RelativeLayout {
         if (!checkPermissions()) {
             return;
         }
-        
+
         setUpCameraOutputs(width, height);
         configureTransform(width, height);
-        
+
         Activity activity = (Activity) getContext();
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
-        
+
         try {
             if (!mCameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
                 throw new RuntimeException("Time out waiting to lock camera opening.");
@@ -209,6 +230,10 @@ class Preview extends RelativeLayout {
         mCameraId = cameraId;
     }
 
+    public void setCaptureSession(CameraCaptureSession session) {
+        mCaptureSession = session;
+    }
+
     public void resumePreview() {
         if (mTextureView.isAvailable()) {
             openCamera(mTextureView.getWidth(), mTextureView.getHeight());
@@ -225,10 +250,12 @@ class Preview extends RelativeLayout {
     private void setUpCameraOutputs(int width, int height) {
         Activity activity = (Activity) getContext();
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
-        
+
+        Log.d(TAG, "setUpCameraOutputs - Input: width=" + width + ", height=" + height);
+
         try {
             mCharacteristics = manager.getCameraCharacteristics(mCameraId);
-            
+
             StreamConfigurationMap map = mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map == null) {
                 return;
@@ -275,6 +302,10 @@ class Preview extends RelativeLayout {
                 maxPreviewHeight = 1080;
             }
 
+            Log.d(TAG, "setUpCameraOutputs - rotatedPreviewWidth=" + rotatedPreviewWidth + ", rotatedPreviewHeight=" + rotatedPreviewHeight);
+            Log.d(TAG, "setUpCameraOutputs - maxPreviewWidth=" + maxPreviewWidth + ", maxPreviewHeight=" + maxPreviewHeight);
+            Log.d(TAG, "setUpCameraOutputs - aspectRatio Size(" + width + ", " + height + ")");
+
             // Choose the optimal preview size
             mPreviewSize = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class),
                     rotatedPreviewWidth, rotatedPreviewHeight, maxPreviewWidth,
@@ -282,10 +313,18 @@ class Preview extends RelativeLayout {
 
             // We fit the aspect ratio of TextureView to the size of preview we picked.
             int orientation = getResources().getConfiguration().orientation;
+
+            // Always use cover mode to fill the entire preview area
+            // This ensures the preview fills the specified dimensions without letterboxing
+            mTextureView.setCoverMode(true);
+
+            // Always set the aspect ratio to match camera preview
             if (orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) {
                 mTextureView.setAspectRatio(mPreviewSize.getWidth(), mPreviewSize.getHeight());
+                Log.d(TAG, "setUpCameraOutputs - Landscape aspect ratio: " + mPreviewSize.getWidth() + "x" + mPreviewSize.getHeight() + ", coverMode=true");
             } else {
                 mTextureView.setAspectRatio(mPreviewSize.getHeight(), mPreviewSize.getWidth());
+                Log.d(TAG, "setUpCameraOutputs - Portrait aspect ratio: " + mPreviewSize.getHeight() + "x" + mPreviewSize.getWidth() + ", coverMode=true");
             }
 
             // Check if the flash is supported.
@@ -306,16 +345,25 @@ class Preview extends RelativeLayout {
         List<Size> bigEnough = new ArrayList<>();
         // Collect the supported resolutions that are smaller than the preview Surface
         List<Size> notBigEnough = new ArrayList<>();
-        int w = aspectRatio.getWidth();
-        int h = aspectRatio.getHeight();
+
+        // Use a tolerance for aspect ratio matching instead of exact equality
+        final double ASPECT_TOLERANCE = 0.15;
+        double targetRatio = (double) aspectRatio.getWidth() / aspectRatio.getHeight();
+
         for (Size option : choices) {
-            if (option.getWidth() <= maxWidth && option.getHeight() <= maxHeight &&
-                    option.getHeight() == option.getWidth() * h / w) {
-                if (option.getWidth() >= textureViewWidth &&
-                    option.getHeight() >= textureViewHeight) {
-                    bigEnough.add(option);
-                } else {
-                    notBigEnough.add(option);
+            // Check if size is within max bounds
+            if (option.getWidth() <= maxWidth && option.getHeight() <= maxHeight) {
+                // Check aspect ratio with tolerance
+                double ratio = (double) option.getWidth() / option.getHeight();
+                boolean aspectRatioMatches = Math.abs(ratio - targetRatio) <= ASPECT_TOLERANCE;
+
+                if (aspectRatioMatches) {
+                    if (option.getWidth() >= textureViewWidth &&
+                        option.getHeight() >= textureViewHeight) {
+                        bigEnough.add(option);
+                    } else {
+                        notBigEnough.add(option);
+                    }
                 }
             }
         }
@@ -327,8 +375,30 @@ class Preview extends RelativeLayout {
         } else if (notBigEnough.size() > 0) {
             return Collections.max(notBigEnough, new CompareSizesByArea());
         } else {
-            Log.e("CameraPreview", "Couldn't find any suitable preview size");
-            return choices[0];
+            // If no size matches the aspect ratio, just find the best size that fits
+            Log.w("CameraPreview", "No size found matching aspect ratio, finding best fit");
+            bigEnough.clear();
+            notBigEnough.clear();
+
+            for (Size option : choices) {
+                if (option.getWidth() <= maxWidth && option.getHeight() <= maxHeight) {
+                    if (option.getWidth() >= textureViewWidth &&
+                        option.getHeight() >= textureViewHeight) {
+                        bigEnough.add(option);
+                    } else {
+                        notBigEnough.add(option);
+                    }
+                }
+            }
+
+            if (bigEnough.size() > 0) {
+                return Collections.min(bigEnough, new CompareSizesByArea());
+            } else if (notBigEnough.size() > 0) {
+                return Collections.max(notBigEnough, new CompareSizesByArea());
+            } else {
+                Log.e("CameraPreview", "Couldn't find any suitable preview size, using first available");
+                return choices[0];
+            }
         }
     }
 
@@ -337,14 +407,14 @@ class Preview extends RelativeLayout {
         if (null == mTextureView || null == mPreviewSize || null == activity) {
             return;
         }
-        
+
         int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
         Matrix matrix = new Matrix();
         RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
         RectF bufferRect = new RectF(0, 0, mPreviewSize.getHeight(), mPreviewSize.getWidth());
         float centerX = viewRect.centerX();
         float centerY = viewRect.centerY();
-        
+
         if (Surface.ROTATION_90 == rotation || Surface.ROTATION_270 == rotation) {
             bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
             matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
@@ -385,6 +455,10 @@ class Preview extends RelativeLayout {
     }
 
     private void createCameraPreviewSession() {
+        createCameraPreviewSession(null);
+    }
+
+    public void createCameraPreviewSession(List<Surface> additionalSurfaces) {
         try {
             SurfaceTexture texture = mTextureView.getSurfaceTexture();
             assert texture != null;
@@ -399,8 +473,15 @@ class Preview extends RelativeLayout {
             mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             mPreviewRequestBuilder.addTarget(mPreviewSurface);
 
+            // Build the list of surfaces (preview + any additional surfaces like ImageReader)
+            List<Surface> surfaces = new ArrayList<>();
+            surfaces.add(mPreviewSurface);
+            if (additionalSurfaces != null) {
+                surfaces.addAll(additionalSurfaces);
+            }
+
             // Here, we create a CameraCaptureSession for camera preview.
-            mCameraDevice.createCaptureSession(Arrays.asList(mPreviewSurface),
+            mCameraDevice.createCaptureSession(surfaces,
                     new CameraCaptureSession.StateCallback() {
 
                         @Override
@@ -494,6 +575,7 @@ class Preview extends RelativeLayout {
     private static class AutoFitTextureView extends TextureView {
         private int mRatioWidth = 0;
         private int mRatioHeight = 0;
+        private boolean mCoverMode = false; // true = cover (fill screen), false = fit (fit inside)
 
         public AutoFitTextureView(Context context) {
             super(context);
@@ -505,7 +587,7 @@ class Preview extends RelativeLayout {
             }
             mRatioWidth = width;
             mRatioHeight = height;
-            
+
             // Ensure requestLayout() runs on the main UI thread
             post(new Runnable() {
                 @Override
@@ -513,6 +595,11 @@ class Preview extends RelativeLayout {
                     requestLayout();
                 }
             });
+        }
+
+        public void setCoverMode(boolean coverMode) {
+            mCoverMode = coverMode;
+            requestLayout();
         }
 
         @Override
@@ -523,10 +610,20 @@ class Preview extends RelativeLayout {
             if (0 == mRatioWidth || 0 == mRatioHeight) {
                 setMeasuredDimension(width, height);
             } else {
-                if (width < height * mRatioWidth / mRatioHeight) {
-                    setMeasuredDimension(width, width * mRatioHeight / mRatioWidth);
+                if (mCoverMode) {
+                    // Cover mode: fill the entire space, may crop edges
+                    if (width > height * mRatioWidth / mRatioHeight) {
+                        setMeasuredDimension(width, width * mRatioHeight / mRatioWidth);
+                    } else {
+                        setMeasuredDimension(height * mRatioWidth / mRatioHeight, height);
+                    }
                 } else {
-                    setMeasuredDimension(height * mRatioWidth / mRatioHeight, height);
+                    // Fit mode: fit inside the space, may have letterboxing
+                    if (width < height * mRatioWidth / mRatioHeight) {
+                        setMeasuredDimension(width, width * mRatioHeight / mRatioWidth);
+                    } else {
+                        setMeasuredDimension(height * mRatioWidth / mRatioHeight, height);
+                    }
                 }
             }
         }

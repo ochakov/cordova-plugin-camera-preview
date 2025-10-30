@@ -46,18 +46,26 @@ CameraPreview.startCamera = function(options, onSuccess, onError) {
 
   options.storeToFile = options.storeToFile || false;
 
+  // Handle fullScreen option by setting width/height to 0
+  if (options.fullScreen) {
+    options.x = 0;
+    options.y = 0;
+    options.width = 0;
+    options.height = 0;
+  }
+
   exec(onSuccess, onError, PLUGIN_NAME, "startCamera", [
-    options.x, 
-    options.y, 
-    options.width, 
-    options.height, 
-    options.camera, 
-    options.tapPhoto, 
-    options.previewDrag, 
-    options.toBack, 
-    options.alpha, 
-    options.tapFocus, 
-    options.disableExifHeaderStripping, 
+    options.x,
+    options.y,
+    options.width,
+    options.height,
+    options.camera,
+    options.tapPhoto,
+    options.previewDrag,
+    options.toBack,
+    options.alpha,
+    options.tapFocus,
+    options.disableExifHeaderStripping,
     options.storeToFile
   ]);
 };
@@ -235,8 +243,28 @@ CameraPreview.getCameraCharacteristics = function(onSuccess, onError) {
   exec(onSuccess, onError, PLUGIN_NAME, "getCameraCharacteristics", []);
 };
 
+// Store the back button callback globally
+var _backButtonCallback = null;
+var _backButtonHandler = function() {
+  if (isFunction(_backButtonCallback)) {
+    _backButtonCallback("Back button pressed");
+  }
+};
+
 CameraPreview.onBackButton = function(onSuccess, onError) {
-  exec(onSuccess, onError, PLUGIN_NAME, "onBackButton");
+  // Store the callback
+  exec(onSuccess, onError, PLUGIN_NAME, "onBackButton", []);
+
+  // Remove any existing listener first
+  if (_backButtonCallback !== null) {
+    document.removeEventListener("backbutton", _backButtonHandler, false);
+  }
+
+  // Store the new callback
+  _backButtonCallback = onSuccess;
+
+  // Add the new listener
+  document.addEventListener("backbutton", _backButtonHandler, false);
 };
 
 CameraPreview.getBlob = function (url, onSuccess, onError) {

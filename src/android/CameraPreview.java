@@ -1,19 +1,14 @@
 package com.cordovaplugincamerapreview;
 
 import android.Manifest;
-import android.app.Activity;
 import android.content.Context;
-import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
 import android.app.FragmentManager;
 import android.app.FragmentTransaction;
 import android.os.Build;
-import android.os.Handler;
-import android.hardware.Camera;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
-import android.hardware.camera2.CaptureRequest;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.Size;
@@ -101,6 +96,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
   private JSONArray execArgs;
 
   private ViewParent webViewParent;
+  private String currentFlashMode = "auto"; // Default flash mode
 
   private int containerViewId = 20; //<- set to random number to prevent conflict with other plugins
   public CameraPreview(){
@@ -297,13 +293,33 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
 
     DisplayMetrics metrics = cordova.getActivity().getResources().getDisplayMetrics();
 
-    // offset
-    int computedX = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, x, metrics);
-    int computedY = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, y, metrics);
+    Log.d(TAG, "startCamera - Input dimensions: x=" + x + ", y=" + y + ", width=" + width + ", height=" + height);
+    Log.d(TAG, "startCamera - Screen dimensions: width=" + metrics.widthPixels + ", height=" + metrics.heightPixels);
+    Log.d(TAG, "startCamera - Density: " + metrics.density);
 
-    // size
-    int computedWidth = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, width, metrics);
-    int computedHeight = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, height, metrics);
+    int computedX;
+    int computedY;
+    int computedWidth;
+    int computedHeight;
+
+    // Check if width/height are 0 (full screen mode)
+    if (width == 0 || height == 0) {
+      // Zero dimensions mean full screen
+      computedX = 0;
+      computedY = 0;
+      computedWidth = 0;
+      computedHeight = 0;
+      Log.d(TAG, "startCamera - Using full screen mode (zero dimensions)");
+    } else {
+      // Values are in DIP, convert to pixels
+      computedX = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, x, metrics);
+      computedY = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, y, metrics);
+      computedWidth = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, width, metrics);
+      computedHeight = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, height, metrics);
+      Log.d(TAG, "startCamera - Using custom dimensions mode (converted from DIP to pixels)");
+    }
+
+    Log.d(TAG, "startCamera - Computed dimensions: x=" + computedX + ", y=" + computedY + ", width=" + computedWidth + ", height=" + computedHeight);
 
     fragment.setRect(computedX, computedY, computedWidth, computedHeight);
 
@@ -523,10 +539,15 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       return true;
     }
 
-    // Camera2 doesn't support color effects directly like Camera1
-    // This would need to be implemented with image processing filters
-    fragment.setColorEffect(effect);
-    callbackContext.success(effect);
+    cordova.getActivity().runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        // Camera2 doesn't support color effects directly like Camera1
+        // This would need to be implemented with image processing filters
+        fragment.setColorEffect(effect);
+        callbackContext.success(effect);
+      }
+    });
     return true;
   }
 
@@ -714,9 +735,14 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
 
     float maxZoom = fragment.getMaxZoom();
     float zoomLevel = Math.max(1.0f, Math.min((float)zoom, maxZoom));
-    
-    fragment.setZoom(zoomLevel);
-    callbackContext.success((int)zoomLevel);
+
+    cordova.getActivity().runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        fragment.setZoom(zoomLevel);
+        callbackContext.success((int)zoomLevel);
+      }
+    });
     return true;
   }
 
@@ -799,9 +825,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       return true;
     }
 
-    // Camera2 uses auto flash mode by default
-    String flashMode = "auto";
-    callbackContext.success(flashMode);
+    callbackContext.success(currentFlashMode);
 
     return true;
   }
@@ -813,8 +837,14 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
 
     List<String> supportedFlashModes = fragment.getSupportedFlashModes();
     if (supportedFlashModes != null && supportedFlashModes.indexOf(flashMode) > -1) {
-      fragment.setFlashMode(flashMode);
-      callbackContext.success(flashMode);
+      cordova.getActivity().runOnUiThread(new Runnable() {
+        @Override
+        public void run() {
+          fragment.setFlashMode(flashMode);
+          currentFlashMode = flashMode; // Store the flash mode
+          callbackContext.success(flashMode);
+        }
+      });
     } else {
       callbackContext.error("Flash mode not recognised: " + flashMode);
     }
@@ -887,8 +917,13 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
 
     setFocusCallbackContext = callbackContext;
 
-    // Use Camera2 API for focus - the setFocus method in CameraActivity handles this
-    fragment.setFocus(pointX, pointY);
+    cordova.getActivity().runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        // Use Camera2 API for focus - the setFocus method in CameraActivity handles this
+        fragment.setFocus(pointX, pointY);
+      }
+    });
 
     return true;
   }
@@ -919,9 +954,13 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       return true;
     }
 
-    fragment.switchCamera();
-
-    callbackContext.success();
+    cordova.getActivity().runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        fragment.switchCamera();
+        callbackContext.success();
+      }
+    });
 
     return true;
   }
@@ -931,9 +970,13 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       return true;
     }
 
-    fragment.switchFocalLength();
-
-    callbackContext.success();
+    cordova.getActivity().runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        fragment.switchFocalLength();
+        callbackContext.success();
+      }
+    });
 
     return true;
   }
@@ -956,7 +999,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
 
     float[] focalLengths = fragment.getAvailableFocalLengths();
     JSONArray focalLengthsArray = new JSONArray();
-    
+
     try {
       for (float focalLength : focalLengths) {
         focalLengthsArray.put(focalLength);
@@ -964,7 +1007,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     } catch (JSONException e) {
       Log.d(TAG, "getAvailableFocalLengths failed to set output payload");
     }
-    
+
     callbackContext.success(focalLengthsArray);
 
     return true;
@@ -983,6 +1026,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     Log.d(TAG, "Back button tapped, notifying");
 
     PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, "Back button pressed");
+    pluginResult.setKeepCallback(true); // Keep the callback alive for multiple back button presses
     tapBackButtonContext.sendPluginResult(pluginResult);
   }
 
