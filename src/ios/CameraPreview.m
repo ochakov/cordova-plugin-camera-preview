@@ -38,6 +38,16 @@
     BOOL disableExifHeaderStripping = (BOOL) [command.arguments[10] boolValue]; // ignore Android only
     self.storeToFile = (BOOL) [command.arguments[11] boolValue];
 
+    // Handle fullscreen mode: if width and height are 0, use screen dimensions
+    if (width == 0 && height == 0) {
+      CGRect screenBounds = [[UIScreen mainScreen] bounds];
+      width = screenBounds.size.width;
+      height = screenBounds.size.height;
+      x = 0;
+      y = 0;
+      NSLog(@"startCamera - Fullscreen mode enabled. Width: %f, Height: %f", width, height);
+    }
+
     // Create the session manager
     self.sessionManager = [[CameraSessionManager alloc] init];
 
@@ -49,6 +59,8 @@
     self.cameraRenderController.sessionManager = self.sessionManager;
     self.cameraRenderController.view.frame = CGRectMake(x, y, width, height);
     self.cameraRenderController.delegate = self;
+
+    NSLog(@"startCamera - Camera preview frame: x=%f, y=%f, width=%f, height=%f", x, y, width, height);
 
     [self.viewController addChildViewController:self.cameraRenderController];
 
@@ -155,13 +167,30 @@
   CDVPluginResult *pluginResult;
 
   if (self.sessionManager != nil) {
-    [self.sessionManager switchFocalLength:^(BOOL switched) {
-      if (switched) {
-        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK] callbackId:command.callbackId];
-      } else {
-        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Failed to switch focal length"] callbackId:command.callbackId];
-      }
-    }];
+    // Check if a specific focal length was provided
+    if (command.arguments.count > 0) {
+      float targetFocalLength = (float)[command.arguments[0] floatValue];
+      NSLog(@"switchFocalLength - Switching to specific focal length: %f", targetFocalLength);
+
+      [self.sessionManager switchFocalLength:targetFocalLength completion:^(BOOL switched) {
+        if (switched) {
+          [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK] callbackId:command.callbackId];
+        } else {
+          [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Failed to switch focal length"] callbackId:command.callbackId];
+        }
+      }];
+    } else {
+      // No parameter provided, cycle to next focal length
+      NSLog(@"switchFocalLength - Cycling to next focal length");
+
+      [self.sessionManager switchFocalLength:^(BOOL switched) {
+        if (switched) {
+          [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK] callbackId:command.callbackId];
+        } else {
+          [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Failed to switch focal length"] callbackId:command.callbackId];
+        }
+      }];
+    }
   } else {
     pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Session not started"];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
@@ -588,6 +617,15 @@
         CGFloat width = (CGFloat)[command.arguments[0] floatValue];
         CGFloat height = (CGFloat)[command.arguments[1] floatValue];
 
+        // Handle fullscreen mode: if width and height are 0, use screen dimensions
+        if (width == 0 && height == 0) {
+            CGRect screenBounds = [[UIScreen mainScreen] bounds];
+            width = screenBounds.size.width;
+            height = screenBounds.size.height;
+            NSLog(@"setPreviewSize - Fullscreen mode enabled. Width: %f, Height: %f", width, height);
+        }
+
+        NSLog(@"setPreviewSize - Setting preview frame: width=%f, height=%f", width, height);
         self.cameraRenderController.view.frame = CGRectMake(0, 0, width, height);
 
         pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];

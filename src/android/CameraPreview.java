@@ -162,7 +162,12 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     } else if (SWITCH_CAMERA_ACTION.equals(action)) {
       return switchCamera(callbackContext);
     } else if (SWITCH_FOCAL_LENGTH_ACTION.equals(action)) {
-      return switchFocalLength(callbackContext);
+      // Check if a specific focal length was provided
+      if (args.length() > 0) {
+        return switchFocalLength(args.getFloat(0), callbackContext);
+      } else {
+        return switchFocalLength(callbackContext);
+      }
     } else if (GET_CURRENT_FOCAL_LENGTH_ACTION.equals(action)) {
       return getCurrentFocalLength(callbackContext);
     } else if (GET_AVAILABLE_FOCAL_LENGTHS_ACTION.equals(action)) {
@@ -974,6 +979,22 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       @Override
       public void run() {
         fragment.switchFocalLength();
+        callbackContext.success();
+      }
+    });
+
+    return true;
+  }
+
+  private boolean switchFocalLength(final float targetFocalLength, CallbackContext callbackContext) {
+    if(this.hasView(callbackContext) == false){
+      return true;
+    }
+
+    cordova.getActivity().runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        fragment.setFocalLength(targetFocalLength);
         callbackContext.success();
       }
     });

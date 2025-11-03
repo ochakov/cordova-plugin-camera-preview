@@ -78,8 +78,21 @@ CameraPreview.switchCamera = function(onSuccess, onError) {
   exec(onSuccess, onError, PLUGIN_NAME, "switchCamera", []);
 };
 
-CameraPreview.switchFocalLength = function(onSuccess, onError) {
-  exec(onSuccess, onError, PLUGIN_NAME, "switchFocalLength", []);
+CameraPreview.switchFocalLength = function(focalLength, onSuccess, onError) {
+  // Handle optional focalLength parameter
+  if (typeof focalLength === 'function') {
+    // If first parameter is a function, it's the onSuccess callback
+    onError = onSuccess;
+    onSuccess = focalLength;
+    focalLength = undefined;
+  }
+
+  var args = [];
+  if (focalLength !== undefined) {
+    args.push(focalLength);
+  }
+
+  exec(onSuccess, onError, PLUGIN_NAME, "switchFocalLength", args);
 };
 
 CameraPreview.getCurrentFocalLength = function(onSuccess, onError) {

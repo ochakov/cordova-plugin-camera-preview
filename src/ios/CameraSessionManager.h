@@ -18,6 +18,7 @@
 - (void) setupSession:(NSString *)defaultCamera completion:(void(^)(BOOL started))completion;
 - (void) switchCamera:(void(^)(BOOL switched))completion;
 - (void) switchFocalLength:(void(^)(BOOL switched))completion;
+- (void) switchFocalLength:(float)focalLength completion:(void(^)(BOOL switched))completion;
 - (NSArray *) getAvailableFocalLengths;
 - (float) getCurrentFocalLength;
 - (void) setFocalLength:(float)focalLength;
@@ -58,4 +59,6 @@
 @property (nonatomic) NSDictionary *colorTemperatures;
 @property (nonatomic) NSArray *availableFocalLengths;
 @property (nonatomic) NSInteger currentFocalLengthIndex;
+@property (nonatomic) NSMutableDictionary *focalLengthToCameraDevice;
+@property (nonatomic) NSMutableArray *availableCameraDevices;
 @end

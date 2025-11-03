@@ -653,6 +653,76 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         }
     }
 
+    public void setFocalLength(float targetFocalLength) {
+        Log.d(TAG, "setFocalLength - Switching to focal length: " + targetFocalLength);
+
+        if (mPreview == null || availableFocalLengths == null || availableFocalLengths.length == 0) {
+            Log.w(TAG, "Cannot set focal length: camera not ready or no focal lengths available");
+            return;
+        }
+
+        try {
+            // Find the closest available focal length
+            int closestIndex = 0;
+            float minDifference = Float.MAX_VALUE;
+
+            for (int i = 0; i < availableFocalLengths.length; i++) {
+                float difference = Math.abs(availableFocalLengths[i] - targetFocalLength);
+                if (difference < minDifference) {
+                    minDifference = difference;
+                    closestIndex = i;
+                }
+            }
+
+            currentFocalLengthIndex = closestIndex;
+            float actualFocalLength = availableFocalLengths[closestIndex];
+
+            Log.d(TAG, "Setting to focal length: " + actualFocalLength + "mm (index: " + closestIndex + ")");
+
+            // Get the camera ID for this focal length
+            String targetCameraId = focalLengthToCameraId.get(actualFocalLength);
+
+            if (targetCameraId != null && !targetCameraId.equals(mCameraId)) {
+                // Need to switch to a different physical camera
+                Log.d(TAG, "Switching from camera " + mCameraId + " to camera " + targetCameraId);
+
+                // Disable taking pictures while camera is switching
+                canTakePicture = false;
+
+                // Close ImageReader since we're switching cameras
+                synchronized (mImageReaderLock) {
+                    if (mImageReader != null) {
+                        mImageReader.close();
+                        mImageReader = null;
+                        mImageSize = null;
+                    }
+                }
+
+                // Close current camera
+                if (mPreview != null) {
+                    mPreview.closeCamera();
+                }
+
+                // Switch to the new camera
+                mCameraId = targetCameraId;
+                mPreview.setCamera(mCameraId);
+                mPreview.resumePreview();
+
+                // canTakePicture will be set to true in onCameraOpened() callback
+            } else {
+                // Same camera, just use digital zoom
+                Log.d(TAG, "Using digital zoom for focal length on same camera");
+                float defaultFocalLength = availableFocalLengths[0];
+                float zoomRatio = actualFocalLength / defaultFocalLength;
+                setZoom(zoomRatio);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to set focal length", e);
+            canTakePicture = true; // Re-enable on error
+        }
+    }
+
     public float getCurrentFocalLength() {
         if (availableFocalLengths != null && currentFocalLengthIndex >= 0 && currentFocalLengthIndex < availableFocalLengths.length) {
             return availableFocalLengths[currentFocalLengthIndex];

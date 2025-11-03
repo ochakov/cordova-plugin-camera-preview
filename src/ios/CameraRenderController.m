@@ -70,6 +70,12 @@
   }
 
   self.view.userInteractionEnabled = self.dragEnabled || self.tapToTakePicture || self.tapToFocus;
+
+  // Register for orientation changes to handle fullscreen resizing
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(orientationDidChange:)
+                                               name:UIDeviceOrientationDidChangeNotification
+                                             object:nil];
 }
 
 - (void) viewWillAppear:(BOOL)animated {
@@ -100,6 +106,10 @@
 
   [[NSNotificationCenter defaultCenter] removeObserver:self
                                                   name:UIApplicationWillEnterForegroundNotification
+                                                object:nil];
+
+  [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                  name:UIDeviceOrientationDidChangeNotification
                                                 object:nil];
 
   dispatch_async(self.sessionManager.sessionQueue, ^{
@@ -239,6 +249,24 @@
 
 -(void) willRotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
   [self.sessionManager updateOrientation:[self.sessionManager getCurrentOrientation:toInterfaceOrientation]];
+}
+
+- (void)orientationDidChange:(NSNotification *)notification {
+  // Handle orientation changes for fullscreen preview
+  // Check if the view frame is set to fullscreen dimensions
+  CGRect screenBounds = [[UIScreen mainScreen] bounds];
+  CGRect currentFrame = self.view.frame;
+
+  // If the view is fullscreen (0,0 position and screen-sized), update it for new orientation
+  if (currentFrame.origin.x == 0 && currentFrame.origin.y == 0) {
+    // Check if dimensions match screen bounds (accounting for orientation change)
+    if ((currentFrame.size.width == screenBounds.size.width && currentFrame.size.height == screenBounds.size.height) ||
+        (currentFrame.size.width == screenBounds.size.height && currentFrame.size.height == screenBounds.size.width)) {
+      // Update frame to match new screen bounds
+      self.view.frame = CGRectMake(0, 0, screenBounds.size.width, screenBounds.size.height);
+      NSLog(@"orientationDidChange - Updated fullscreen preview frame to: %f x %f", screenBounds.size.width, screenBounds.size.height);
+    }
+  }
 }
 
 @end
