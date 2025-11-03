@@ -164,7 +164,7 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     } else if (SWITCH_FOCAL_LENGTH_ACTION.equals(action)) {
       // Check if a specific focal length was provided
       if (args.length() > 0) {
-        return switchFocalLength(args.getFloat(0), callbackContext);
+        return switchFocalLength((float)args.getDouble(0), callbackContext);
       } else {
         return switchFocalLength(callbackContext);
       }
