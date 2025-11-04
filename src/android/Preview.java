@@ -316,6 +316,8 @@ class Preview extends RelativeLayout {
                     rotatedPreviewWidth, rotatedPreviewHeight, maxPreviewWidth,
                     maxPreviewHeight, new Size(width, height));
 
+            Log.d(TAG, "setUpCameraOutputs - Selected preview size: " + mPreviewSize.getWidth() + "x" + mPreviewSize.getHeight());
+
             // We fit the aspect ratio of TextureView to the size of preview we picked.
             int orientation = getResources().getConfiguration().orientation;
 
@@ -508,6 +510,12 @@ class Preview extends RelativeLayout {
                                     mPreviewRequest = mPreviewRequestBuilder.build();
                                     mCaptureSession.setRepeatingRequest(mPreviewRequest,
                                             null, mBackgroundHandler);
+
+                                    // Reconfigure transform after session is configured to ensure correct aspect ratio
+                                    // This is important when switching cameras with different sensor aspect ratios
+                                    configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+                                    Log.d(TAG, "Transform reconfigured after camera session configured");
+
                                 } catch (CameraAccessException e) {
                                     Log.e(TAG, "Failed to set up camera preview", e);
                                 } catch (IllegalStateException e) {

@@ -531,6 +531,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
             // Clear previous mappings
             focalLengthToCameraId.clear();
             java.util.List<Float> allFocalLengths = new java.util.ArrayList<>();
+            java.util.Set<String> processedCameraIds = new java.util.HashSet<>();
 
             // Get the facing direction of the current camera
             Integer currentFacing = characteristics.get(CameraCharacteristics.LENS_FACING);
@@ -542,8 +543,12 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
             Log.d(TAG, "Initializing focal lengths for cameras with facing: " +
                   (currentFacing == CameraCharacteristics.LENS_FACING_BACK ? "BACK" : "FRONT"));
 
-            // Get all cameras with the same facing direction and their focal lengths
-            for (String cameraId : mCameraManager.getCameraIdList()) {
+            // First pass: Get all cameras from getCameraIdList() with the same facing direction
+            String[] cameraIdList = mCameraManager.getCameraIdList();
+            Log.d(TAG, "getCameraIdList() returned " + cameraIdList.length + " cameras");
+
+            for (String cameraId : cameraIdList) {
+                processedCameraIds.add(cameraId);
                 CameraCharacteristics chars = mCameraManager.getCameraCharacteristics(cameraId);
                 Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
 
@@ -562,6 +567,44 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                             }
                         }
                     }
+                }
+            }
+
+            // Second pass: Probe for hidden camera IDs (0-9)
+            Log.d(TAG, "Probing for hidden camera IDs with same facing direction...");
+            for (int i = 0; i < 10; i++) {
+                String cameraId = String.valueOf(i);
+
+                // Skip if already processed
+                if (processedCameraIds.contains(cameraId)) {
+                    continue;
+                }
+
+                try {
+                    CameraCharacteristics chars = mCameraManager.getCameraCharacteristics(cameraId);
+                    Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+
+                    // Only include cameras with the same facing direction as the current camera
+                    if (facing != null && facing.equals(currentFacing)) {
+                        Log.d(TAG, "Found hidden camera ID: " + cameraId);
+
+                        float[] focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                        if (focalLengths != null && focalLengths.length > 0) {
+                            // For each focal length, map it to this camera ID
+                            for (float focalLength : focalLengths) {
+                                // Round to 2 decimal places to avoid floating point precision issues
+                                float roundedFocalLength = Math.round(focalLength * 100f) / 100f;
+                                if (!focalLengthToCameraId.containsKey(roundedFocalLength)) {
+                                    focalLengthToCameraId.put(roundedFocalLength, cameraId);
+                                    allFocalLengths.add(roundedFocalLength);
+                                    Log.d(TAG, "Mapped hidden camera focal length " + roundedFocalLength + "mm to camera " + cameraId);
+                                }
+                            }
+                        }
+                    }
+                } catch (CameraAccessException | IllegalArgumentException e) {
+                    // Camera ID doesn't exist, continue to next
+                    Log.d(TAG, "Camera ID " + cameraId + " not available");
                 }
             }
 
