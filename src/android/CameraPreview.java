@@ -1113,13 +1113,14 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
         cameraCharacteristicsArray.put(cameraData);
       }
 
-      // Now probe for hidden camera IDs (0-9)
+      // Now probe for hidden camera IDs (0-20)
       Log.d(TAG, "Probing for hidden camera IDs...");
-      for (int i = 0; i < 10; i++) {
+      for (int i = 0; i < 20; i++) {
         String cameraId = String.valueOf(i);
 
         // Skip if already processed
         if (processedCameraIds.contains(cameraId)) {
+          Log.d(TAG, "Camera ID " + cameraId + " already processed in first pass");
           continue;
         }
 
@@ -1133,9 +1134,15 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
           cameraCharacteristicsArray.put(cameraData);
           processedCameraIds.add(cameraId);
 
-        } catch (CameraAccessException | IllegalArgumentException e) {
+        } catch (CameraAccessException e) {
           // Camera ID doesn't exist, continue to next
-          Log.d(TAG, "Camera ID " + cameraId + " not available");
+          Log.d(TAG, "Camera ID " + cameraId + " not available (CameraAccessException)");
+        } catch (IllegalArgumentException e) {
+          // Camera ID doesn't exist, continue to next
+          Log.d(TAG, "Camera ID " + cameraId + " not available (IllegalArgumentException)");
+        } catch (Exception e) {
+          // Catch any other exceptions
+          Log.d(TAG, "Camera ID " + cameraId + " error: " + e.getMessage());
         }
       }
 

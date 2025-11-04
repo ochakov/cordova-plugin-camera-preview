@@ -551,6 +551,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                 processedCameraIds.add(cameraId);
                 CameraCharacteristics chars = mCameraManager.getCameraCharacteristics(cameraId);
                 Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+                Integer hardwareLevel = chars.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
 
                 // Only include cameras with the same facing direction as the current camera
                 if (facing != null && facing.equals(currentFacing)) {
@@ -570,19 +571,31 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                 }
             }
 
-            // Second pass: Probe for hidden camera IDs (0-9)
+            // Second pass: Probe for hidden camera IDs (0-20)
             Log.d(TAG, "Probing for hidden camera IDs with same facing direction...");
-            for (int i = 0; i < 10; i++) {
+            for (int i = 0; i < 20; i++) {
                 String cameraId = String.valueOf(i);
 
                 // Skip if already processed
                 if (processedCameraIds.contains(cameraId)) {
+                    Log.d(TAG, "Camera ID " + cameraId + " already processed in first pass");
                     continue;
                 }
 
                 try {
                     CameraCharacteristics chars = mCameraManager.getCameraCharacteristics(cameraId);
                     Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+                    Integer hardwareLevel = chars.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+
+                    Log.d(TAG, "Probing camera ID " + cameraId + " - facing: " +
+                          (facing == null ? "null" : (facing == CameraCharacteristics.LENS_FACING_BACK ? "BACK" : "FRONT")) +
+                          ", hardwareLevel: " + (hardwareLevel == null ? "null" : hardwareLevel));
+
+                    // Skip cameras with INFO_SUPPORTED_HARDWARE_LEVEL = 0 (LEGACY)
+                    if (hardwareLevel != null && hardwareLevel == 0) {
+                        Log.d(TAG, "Skipping hidden camera " + cameraId + " - INFO_SUPPORTED_HARDWARE_LEVEL is LEGACY (0)");
+                        continue;
+                    }
 
                     // Only include cameras with the same facing direction as the current camera
                     if (facing != null && facing.equals(currentFacing)) {
@@ -598,13 +611,22 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                                     focalLengthToCameraId.put(roundedFocalLength, cameraId);
                                     allFocalLengths.add(roundedFocalLength);
                                     Log.d(TAG, "Mapped hidden camera focal length " + roundedFocalLength + "mm to camera " + cameraId);
+                                } else {
+                                    Log.d(TAG, "Focal length " + roundedFocalLength + "mm already mapped to camera " +
+                                          focalLengthToCameraId.get(roundedFocalLength) + ", skipping camera " + cameraId);
                                 }
                             }
                         }
                     }
-                } catch (CameraAccessException | IllegalArgumentException e) {
+                } catch (CameraAccessException e) {
                     // Camera ID doesn't exist, continue to next
-                    Log.d(TAG, "Camera ID " + cameraId + " not available");
+                    Log.d(TAG, "Camera ID " + cameraId + " not available (CameraAccessException)");
+                } catch (IllegalArgumentException e) {
+                    // Camera ID doesn't exist, continue to next
+                    Log.d(TAG, "Camera ID " + cameraId + " not available (IllegalArgumentException)");
+                } catch (Exception e) {
+                    // Catch any other exceptions
+                    Log.d(TAG, "Camera ID " + cameraId + " error: " + e.getMessage());
                 }
             }
 

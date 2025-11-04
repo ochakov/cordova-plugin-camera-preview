@@ -277,7 +277,7 @@ CameraPreview.onBackButton = function(onSuccess, onError) {
   _backButtonCallback = onSuccess;
 
   // Add the new listener
-  document.addEventListener("backbutton", _backButtonHandler, false);
+  _backButtonCallback && document.addEventListener("backbutton", _backButtonHandler, false);
 };
 
 CameraPreview.getBlob = function (url, onSuccess, onError) {
