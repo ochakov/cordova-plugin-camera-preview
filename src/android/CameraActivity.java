@@ -110,6 +110,11 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     private float[] availableFocalLengths;
     private int currentFocalLengthIndex = 0;
 
+    // Persistent focal length state across Fragment recreation
+    // This is a static variable that survives Fragment destruction/recreation
+    private static float savedFocalLength = -1f;
+    private static int savedFocalLengthIndex = -1;
+
     // Map of focal lengths to camera IDs for multi-camera support
     private java.util.Map<Float, String> focalLengthToCameraId = new java.util.HashMap<>();
 
@@ -273,10 +278,29 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     }
 
     @Override
+    public void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+
+        // Save focal length state to static variables to preserve it during rotation
+        // Static variables survive Fragment destruction/recreation
+        if (availableFocalLengths != null && currentFocalLengthIndex >= 0 && currentFocalLengthIndex < availableFocalLengths.length) {
+            savedFocalLength = availableFocalLengths[currentFocalLengthIndex];
+            savedFocalLengthIndex = currentFocalLengthIndex;
+            Log.d(TAG, "onSaveInstanceState - Saved focal length: " + savedFocalLength + "mm (index: " + savedFocalLengthIndex + ")");
+        }
+    }
+
+    @Override
     public void onViewCreated(View view, Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
         Log.d(TAG, "onViewCreated - tapToFocus=" + tapToFocus + ", tapToTakePicture=" + tapToTakePicture + ", dragEnabled=" + dragEnabled);
+
+        // Restore focal length state from static variables if available
+        // Static variables survive Fragment destruction/recreation during rotation
+        if (savedFocalLength > 0 && savedFocalLengthIndex >= 0) {
+            Log.d(TAG, "onViewCreated - Restoring focal length: " + savedFocalLength + "mm (index: " + savedFocalLengthIndex + ")");
+        }
 
         // Set up touch handling after the preview is created
         setupTouchHandling();
@@ -353,6 +377,15 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     @Override
     public void onPause() {
         Log.d(TAG, "onPause");
+
+        // Save focal length state before pausing
+        // This ensures the focal length is preserved during rotation
+        if (availableFocalLengths != null && currentFocalLengthIndex >= 0 && currentFocalLengthIndex < availableFocalLengths.length) {
+            savedFocalLength = availableFocalLengths[currentFocalLengthIndex];
+            savedFocalLengthIndex = currentFocalLengthIndex;
+            Log.d(TAG, "onPause - Saved focal length: " + savedFocalLength + "mm (index: " + savedFocalLengthIndex + ")");
+        }
+
         if (mPreview != null) {
             mPreview.pausePreview();
             mPreview.stopBackgroundThread();
@@ -528,6 +561,23 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
 
     private void initializeFocalLengths(CameraCharacteristics characteristics) {
         try {
+            // Determine the previous focal length to restore
+            // Priority: 1) Static saved focal length (from rotation), 2) Current focal length, 3) None
+            float previousFocalLength = -1f;
+
+            // Check if we have a saved focal length from rotation
+            if (savedFocalLength > 0) {
+                previousFocalLength = savedFocalLength;
+                Log.d(TAG, "initializeFocalLengths - Using saved focal length from rotation: " + previousFocalLength + "mm");
+            } else if (availableFocalLengths != null && currentFocalLengthIndex >= 0 && currentFocalLengthIndex < availableFocalLengths.length) {
+                previousFocalLength = availableFocalLengths[currentFocalLengthIndex];
+                Log.d(TAG, "initializeFocalLengths - Using current focal length: " + previousFocalLength + "mm (index: " + currentFocalLengthIndex + ")");
+            } else if (availableFocalLengths != null) {
+                Log.d(TAG, "initializeFocalLengths - availableFocalLengths exists but index is invalid: " + currentFocalLengthIndex + " (length: " + availableFocalLengths.length + ")");
+            } else {
+                Log.d(TAG, "initializeFocalLengths - First initialization, no previous focal length to restore");
+            }
+
             // Clear previous mappings
             focalLengthToCameraId.clear();
             java.util.List<Float> allFocalLengths = new java.util.ArrayList<>();
@@ -639,14 +689,27 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                 availableFocalLengths[i] = allFocalLengths.get(i);
             }
 
-            // Find the index of the current camera's focal length
-            float[] currentFocalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-            if (currentFocalLengths != null && currentFocalLengths.length > 0) {
-                float currentFocalLength = Math.round(currentFocalLengths[0] * 100f) / 100f;
+            // Restore the previous focal length index if available
+            // Otherwise, find the index of the current camera's focal length
+            if (previousFocalLength > 0) {
+                // Try to restore the previous focal length
                 for (int i = 0; i < availableFocalLengths.length; i++) {
-                    if (Math.abs(availableFocalLengths[i] - currentFocalLength) < 0.01f) {
+                    if (Math.abs(availableFocalLengths[i] - previousFocalLength) < 0.01f) {
                         currentFocalLengthIndex = i;
+                        Log.d(TAG, "Restored previous focal length: " + previousFocalLength + "mm (index: " + currentFocalLengthIndex + ")");
                         break;
+                    }
+                }
+            } else {
+                // First initialization: find the index of the current camera's focal length
+                float[] currentFocalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                if (currentFocalLengths != null && currentFocalLengths.length > 0) {
+                    float currentFocalLength = Math.round(currentFocalLengths[0] * 100f) / 100f;
+                    for (int i = 0; i < availableFocalLengths.length; i++) {
+                        if (Math.abs(availableFocalLengths[i] - currentFocalLength) < 0.01f) {
+                            currentFocalLengthIndex = i;
+                            break;
+                        }
                     }
                 }
             }
@@ -654,6 +717,28 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
             Log.d(TAG, "Initialized focal lengths: " + java.util.Arrays.toString(availableFocalLengths));
             Log.d(TAG, "Current focal length index: " + currentFocalLengthIndex);
             Log.d(TAG, "Focal length to camera ID mapping: " + focalLengthToCameraId.toString());
+
+            // If we restored a focal length from rotation, switch to the correct camera
+            if (savedFocalLength > 0 && currentFocalLengthIndex >= 0 && currentFocalLengthIndex < availableFocalLengths.length) {
+                float targetFocalLength = availableFocalLengths[currentFocalLengthIndex];
+                String targetCameraId = focalLengthToCameraId.get(targetFocalLength);
+
+                if (targetCameraId != null && !targetCameraId.equals(mCameraId)) {
+                    Log.d(TAG, "Switching to camera " + targetCameraId + " for restored focal length " + targetFocalLength + "mm");
+                    mCameraId = targetCameraId;
+                    if (mPreview != null) {
+                        mPreview.setCamera(mCameraId);
+                    }
+                }
+            }
+
+            // Clear the static saved focal length after restoring
+            // This ensures we don't restore the same focal length on subsequent camera switches
+            if (savedFocalLength > 0) {
+                Log.d(TAG, "Clearing saved focal length after restoration");
+                savedFocalLength = -1f;
+                savedFocalLengthIndex = -1;
+            }
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize focal lengths", e);
         }

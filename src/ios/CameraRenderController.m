@@ -100,6 +100,9 @@
 - (void) viewWillDisappear:(BOOL)animated {
   [super viewWillDisappear:animated];
 
+  // Save focal length state before view disappears (e.g., during rotation)
+  [self.sessionManager saveFocalLengthState];
+
   [[NSNotificationCenter defaultCenter] removeObserver:self
                                                   name:UIApplicationDidBecomeActiveNotification
                                                 object:nil];

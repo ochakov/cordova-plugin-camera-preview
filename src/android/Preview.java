@@ -103,6 +103,10 @@ class Preview extends RelativeLayout {
 
         @Override
         public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
+            Log.d(TAG, "onSurfaceTextureSizeChanged - width=" + width + ", height=" + height);
+            // Recalculate camera outputs when TextureView size changes
+            // This ensures correct aspect ratio when switching cameras or on initial layout
+            setUpCameraOutputs(width, height);
             configureTransform(width, height);
         }
 
@@ -184,6 +188,8 @@ class Preview extends RelativeLayout {
             return;
         }
 
+        Log.d(TAG, "openCamera - width=" + width + ", height=" + height + ", mCameraId=" + mCameraId);
+
         setUpCameraOutputs(width, height);
         configureTransform(width, height);
 
@@ -256,10 +262,12 @@ class Preview extends RelativeLayout {
         Activity activity = (Activity) getContext();
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
 
-        Log.d(TAG, "setUpCameraOutputs - Input: width=" + width + ", height=" + height);
+        Log.d(TAG, "setUpCameraOutputs - Input: width=" + width + ", height=" + height + ", mCameraId=" + mCameraId);
 
         try {
             mCharacteristics = manager.getCameraCharacteristics(mCameraId);
+            Integer facing = mCharacteristics.get(CameraCharacteristics.LENS_FACING);
+            Log.d(TAG, "setUpCameraOutputs - Camera facing: " + (facing == CameraCharacteristics.LENS_FACING_FRONT ? "FRONT" : "BACK"));
 
             StreamConfigurationMap map = mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map == null) {

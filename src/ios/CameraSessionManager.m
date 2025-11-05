@@ -1,5 +1,10 @@
 #include "CameraSessionManager.h"
 
+// Static variables to persist focal length state across view controller recreation
+static float savedFocalLength = -1.0f;
+static NSInteger savedFocalLengthIndex = -1;
+static BOOL hasRestoredFromSavedState = NO;
+
 @implementation CameraSessionManager
 
 - (CameraSessionManager *)init {
@@ -355,9 +360,40 @@
   });
 }
 
+- (void) saveFocalLengthState {
+  // Save focal length state to static variables to preserve it during rotation
+  // Static variables survive view controller recreation
+  if (self.availableFocalLengths != nil && self.currentFocalLengthIndex >= 0 && self.currentFocalLengthIndex < [self.availableFocalLengths count]) {
+    NSNumber *focalLength = [self.availableFocalLengths objectAtIndex:self.currentFocalLengthIndex];
+    savedFocalLength = [focalLength floatValue];
+    savedFocalLengthIndex = self.currentFocalLengthIndex;
+    NSLog(@"saveFocalLengthState - Saved focal length: %@mm (index: %ld)", focalLength, (long)savedFocalLengthIndex);
+  }
+}
+
 - (void) initializeFocalLengths {
   if (self.device == nil) {
     return;
+  }
+
+  // Determine the previous focal length to restore
+  // Only restore if availableFocalLengths is nil (indicating view controller recreation during rotation)
+  // AND we haven't already restored from saved state in this rotation cycle
+  NSNumber *previousFocalLength = nil;
+  BOOL isViewControllerRecreation = (self.availableFocalLengths == nil);
+
+  // Check if we have a saved focal length from rotation AND this is a view controller recreation
+  // AND we haven't already restored from saved state
+  if (isViewControllerRecreation && savedFocalLength > 0 && !hasRestoredFromSavedState) {
+    previousFocalLength = [NSNumber numberWithFloat:savedFocalLength];
+    hasRestoredFromSavedState = YES;
+    NSLog(@"initializeFocalLengths - Using saved focal length from rotation: %@mm", previousFocalLength);
+  } else if (!isViewControllerRecreation && self.availableFocalLengths != nil && self.currentFocalLengthIndex >= 0 && self.currentFocalLengthIndex < [self.availableFocalLengths count]) {
+    // If NOT a view controller recreation, preserve the current focal length
+    previousFocalLength = [self.availableFocalLengths objectAtIndex:self.currentFocalLengthIndex];
+    NSLog(@"initializeFocalLengths - Preserving current focal length: %@mm (index: %ld)", previousFocalLength, (long)self.currentFocalLengthIndex);
+  } else {
+    NSLog(@"initializeFocalLengths - First initialization or view controller recreation, no previous focal length to restore");
   }
 
   [self.focalLengthToCameraDevice removeAllObjects];
@@ -432,10 +468,83 @@
   }];
 
   self.availableFocalLengths = [focalLengths copy];
-  self.currentFocalLengthIndex = 0;
+
+  // Restore the previous focal length index if available
+  // Otherwise, use the first focal length (default behavior)
+  if (previousFocalLength != nil) {
+    // Try to restore the previous focal length
+    NSInteger restoredIndex = [self.availableFocalLengths indexOfObject:previousFocalLength];
+    if (restoredIndex != NSNotFound) {
+      self.currentFocalLengthIndex = restoredIndex;
+      NSLog(@"Restored previous focal length: %@mm (index: %ld)", previousFocalLength, (long)self.currentFocalLengthIndex);
+    } else {
+      // Previous focal length not found in new list, use first one
+      self.currentFocalLengthIndex = 0;
+      NSLog(@"Previous focal length %@ not found in new list, using first focal length", previousFocalLength);
+    }
+  } else {
+    // First initialization: use first focal length (default behavior)
+    self.currentFocalLengthIndex = 0;
+  }
 
   NSLog(@"Initialized focal lengths: %@", self.availableFocalLengths);
   NSLog(@"Available camera devices: %@", self.availableCameraDevices);
+
+  // If we restored a focal length from rotation, switch to the correct camera device
+  if (savedFocalLength > 0 && self.currentFocalLengthIndex >= 0 && self.currentFocalLengthIndex < [self.availableFocalLengths count]) {
+    NSNumber *targetFocalLength = [self.availableFocalLengths objectAtIndex:self.currentFocalLengthIndex];
+    AVCaptureDevice *targetDevice = [self.focalLengthToCameraDevice objectForKey:targetFocalLength];
+
+    if (targetDevice != nil && ![targetDevice.uniqueID isEqualToString:self.device.uniqueID]) {
+      NSLog(@"Switching to camera device for restored focal length %@mm", targetFocalLength);
+
+      // Synchronously switch the camera device since we're already on the session queue
+      NSError *error = nil;
+
+      // Begin configuration
+      [self.session beginConfiguration];
+
+      // Remove current input
+      if (self.videoDeviceInput) {
+        [self.session removeInput:self.videoDeviceInput];
+      }
+
+      // Create new input for target device
+      AVCaptureDeviceInput *newVideoDeviceInput = [AVCaptureDeviceInput deviceInputWithDevice:targetDevice error:&error];
+
+      if (!error && [self.session canAddInput:newVideoDeviceInput]) {
+        [self.session addInput:newVideoDeviceInput];
+        self.videoDeviceInput = newVideoDeviceInput;
+        self.device = targetDevice;
+
+        // Reset zoom to 1.0 for the new device
+        if ([targetDevice lockForConfiguration:&error]) {
+          targetDevice.videoZoomFactor = 1.0;
+          self.videoZoomFactor = 1.0;
+          [targetDevice unlockForConfiguration];
+        }
+
+        NSLog(@"Successfully switched to camera device for restored focal length: %@", targetDevice.deviceType);
+      } else {
+        NSLog(@"Failed to switch to camera device for restored focal length: %@", error);
+      }
+
+      // Update orientation to preserve current device orientation
+      [self updateOrientation:[self getCurrentOrientation]];
+
+      // Commit configuration
+      [self.session commitConfiguration];
+    }
+  }
+
+  // Clear the static saved focal length after restoring
+  // This ensures we don't restore the same focal length on subsequent camera switches
+  if (savedFocalLength > 0 && hasRestoredFromSavedState) {
+    NSLog(@"Clearing saved focal length after restoration");
+    savedFocalLength = -1.0f;
+    savedFocalLengthIndex = -1;
+    hasRestoredFromSavedState = NO;
+  }
 }
 
 - (NSArray *)getFocusModes {
