@@ -237,6 +237,9 @@
     return;
   }
 
+  // First, ensure currentFocalLengthIndex is correctly set to the current device
+  [self updateCurrentFocalLengthIndex];
+
   // Cycle to next focal length
   self.currentFocalLengthIndex = (self.currentFocalLengthIndex + 1) % [self.availableFocalLengths count];
   NSNumber *targetFocalLength = [self.availableFocalLengths objectAtIndex:self.currentFocalLengthIndex];
@@ -252,6 +255,9 @@
     completion(FALSE);
     return;
   }
+
+  // First, ensure currentFocalLengthIndex is correctly set to the current device
+  [self updateCurrentFocalLengthIndex];
 
   // Find the closest available focal length
   NSInteger closestIndex = 0;
@@ -279,6 +285,28 @@
     [self initializeFocalLengths];
   }
   return self.availableFocalLengths;
+}
+
+// Helper method to update currentFocalLengthIndex based on the current device
+- (void) updateCurrentFocalLengthIndex {
+  if (self.device == nil || self.availableFocalLengths == nil) {
+    return;
+  }
+
+  // Find which focal length corresponds to the current device
+  for (NSInteger i = 0; i < [self.availableFocalLengths count]; i++) {
+    NSNumber *focalLength = [self.availableFocalLengths objectAtIndex:i];
+    AVCaptureDevice *mappedDevice = [self.focalLengthToCameraDevice objectForKey:focalLength];
+
+    if (mappedDevice != nil && [mappedDevice.uniqueID isEqualToString:self.device.uniqueID]) {
+      NSLog(@"Updated currentFocalLengthIndex from %ld to %ld (focal length: %@mm)",
+            (long)self.currentFocalLengthIndex, (long)i, focalLength);
+      self.currentFocalLengthIndex = i;
+      return;
+    }
+  }
+
+  NSLog(@"Warning: Could not find current device in focal length mapping");
 }
 
 - (float) getCurrentFocalLength {
