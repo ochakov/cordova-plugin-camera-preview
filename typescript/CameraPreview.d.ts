@@ -22,6 +22,7 @@ declare module 'cordova-plugin-camera-preview' {
     y?: number;
     disableExifHeaderStripping?: boolean;
     storeToFile?: boolean;
+    fullScreen?: boolean;
   }
 
   interface CameraPreviewTakePictureOptions {

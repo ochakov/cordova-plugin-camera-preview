@@ -71,7 +71,11 @@ meteor add cordova:cordova-plugin-camera-preview@X.X.X
 
 #### Android Quirks
 
-1. When using the plugin for older devices, the camera preview will take the focus inside the app once initialized. In order to prevent the app from closing when a user presses the back button, the event for the camera view is disabled. If you still want the user to navigate, you can add a listener for the back event for the preview (see <code>[onBackButton](#onBackButton)</code>)
+1. The Android implementation uses the Camera2 API and requires Android 6.0 (API 23) or newer.
+2. The hardware back button is delivered through Cordova's `backbutton` document event. Register a listener with <code>[onBackButton](#onBackButton)</code> if you want to react to it; the listener is removed again by `stopCamera()`.
+3. Pictures taken with the front camera are mirrored so they match the preview, unless `disableExifHeaderStripping` is set (in which case the JPEG is returned exactly as the camera produced it).
+4. The last selected lens (see <code>[switchFocalLength](#switchFocalLength)</code>) is remembered and restored by the next `startCamera()` with the same camera direction, so the lens survives rotations that restart the preview.
+5. `takePicture` is not available while a video is being recorded; use `takeSnapshot` instead.
 
 # Methods
 
@@ -94,6 +98,7 @@ All options stated are optional and will default to values here
 * `previewDrag` - Defaults to false - Does not work if toBack is set to false
 * `storeToFile` - Defaults to false - Capture images to a file and return back the file path instead of returning base64 encoded data.
 * `disableExifHeaderStripping` - Defaults to false - **Android Only** - Disable automatic rotation of the image, and let the browser deal with it (keep reading on how to achieve it)
+* `fullScreen` - Defaults to false - Ignore `x`, `y`, `width` and `height` and cover the whole screen. The preview follows device rotation.
 
 ```javascript
 let options = {
@@ -137,10 +142,43 @@ CameraPreview.stopCamera();
 
 ### switchCamera([successCallback, errorCallback])
 
-<info>Switch between the rear camera and front camera, if available.</info><br/>
+<info>Switch between the rear camera and front camera, if available. The success callback fires once the other camera is streaming.</info><br/>
 
 ```javascript
 CameraPreview.switchCamera();
+```
+
+<a name="switchFocalLength"></a>
+### switchFocalLength([zoomFactor], [successCallback, errorCallback])
+
+<info>Switch between the lenses of the current camera direction (ultra wide, wide, telephoto). Lenses are identified by their zoom factor relative to the main wide camera, for example `0.5`, `1` and `2`. Called without a zoom factor the plugin cycles to the next lens; with a zoom factor it selects the closest lens (digital zoom is used when the device has no separate lens for it). The success callback fires once the selected lens is streaming, so it is safe to call `takePicture` from it. The error callback fires when there is no other lens or the lens could not be opened, in which case the previous lens keeps running.</info><br/>
+
+```javascript
+CameraPreview.switchFocalLength(); // next lens
+
+CameraPreview.switchFocalLength(0.5, function() {
+  console.log('ultra wide lens selected');
+});
+```
+
+### getCurrentFocalLength(cb, [errorCallback])
+
+<info>Get the zoom factor of the currently selected lens.</info><br/>
+
+```javascript
+CameraPreview.getCurrentFocalLength(function(zoomFactor){
+  console.log(zoomFactor); // e.g. 1
+});
+```
+
+### getAvailableFocalLengths(cb, [errorCallback])
+
+<info>Get the zoom factors of all lenses available for the current camera direction, sorted from widest to longest.</info><br/>
+
+```javascript
+CameraPreview.getAvailableFocalLengths(function(zoomFactors){
+  console.log(zoomFactors); // e.g. [0.5, 1, 2]
+});
 ```
 
 ### show([successCallback, errorCallback])
@@ -301,7 +339,7 @@ CameraPreview.setColorEffect(CameraPreview.COLOR_EFFECT.NEGATIVE);
 
 ### setZoom(zoomMultiplier, [successCallback, errorCallback])
 
-<info>Set the zoom level for the camera device currently started. zoomMultipler option accepts an integer. Zoom level is initially at 1</info><br/>
+<info>Set the zoom level for the camera device currently started. zoomMultiplier accepts a number (1 = no zoom, fractional values are allowed). The value is clamped to the range 1 .. <code>[getMaxZoom](#getMaxZoom)</code> and the value actually applied is passed to the success callback. Zoom level is initially at 1</info><br/>
 
 ```javascript
 CameraPreview.setZoom(2);
@@ -309,7 +347,7 @@ CameraPreview.setZoom(2);
 
 ### getZoom(cb, [errorCallback])
 
-<info>Get the current zoom level for the camera device currently started. Returns an integer representing the current zoom level.</info><br/>
+<info>Get the current zoom level for the camera device currently started. Returns a number representing the current zoom multiplier.</info><br/>
 
 ```javascript
 CameraPreview.getZoom(function(currentZoom){
@@ -317,9 +355,10 @@ CameraPreview.getZoom(function(currentZoom){
 });
 ```
 
+<a name="getMaxZoom"></a>
 ### getMaxZoom(cb, [errorCallback])
 
-<info>Get the maximum zoom level for the camera device currently started. Returns an integer representing the manimum zoom level.</info><br/>
+<info>Get the maximum zoom level for the camera device currently started. Returns a number representing the maximum zoom multiplier.</info><br/>
 
 ```javascript
 CameraPreview.getMaxZoom(function(maxZoom){
@@ -532,7 +571,7 @@ function takePicture() {
 
 *Currently this feature is for Android only. A PR for iOS support would be happily accepted*
 
-<info>Start recording video to the cache.</info><br/>
+<info>Start recording video to the cache. Recording uses the camera that is currently started. `width` and `height` select the closest supported video size (up to 1080p); when omitted the device's default camcorder profile is used. `quality` is currently ignored on Android. Zoom, flash and focus settings can still be changed while recording; `takePicture` is not available until `stopRecordVideo` is called.</info><br/>
 
 ```javascript
 var opts = {

@@ -71,6 +71,7 @@ CameraPreview.startCamera = function(options, onSuccess, onError) {
 };
 
 CameraPreview.stopCamera = function(onSuccess, onError) {
+  removeBackButtonListener();
   exec(onSuccess, onError, PLUGIN_NAME, "stopCamera", []);
 };
 
@@ -256,7 +257,9 @@ CameraPreview.getCameraCharacteristics = function(onSuccess, onError) {
   exec(onSuccess, onError, PLUGIN_NAME, "getCameraCharacteristics", []);
 };
 
-// Store the back button callback globally
+// The hardware back button is delivered through Cordova's "backbutton" document event
+// (Android only; iOS has no back button). Registering a listener overrides Cordova's default
+// back behaviour, so the listener is removed again by stopCamera().
 var _backButtonCallback = null;
 var _backButtonHandler = function() {
   if (isFunction(_backButtonCallback)) {
@@ -264,20 +267,22 @@ var _backButtonHandler = function() {
   }
 };
 
-CameraPreview.onBackButton = function(onSuccess, onError) {
-  // Store the callback
-  exec(onSuccess, onError, PLUGIN_NAME, "onBackButton", []);
-
-  // Remove any existing listener first
+function removeBackButtonListener() {
   if (_backButtonCallback !== null) {
     document.removeEventListener("backbutton", _backButtonHandler, false);
+    _backButtonCallback = null;
+  }
+}
+
+CameraPreview.onBackButton = function(onSuccess, onError) {
+  removeBackButtonListener();
+
+  if (!isFunction(onSuccess)) {
+    return;
   }
 
-  // Store the new callback
   _backButtonCallback = onSuccess;
-
-  // Add the new listener
-  _backButtonCallback && document.addEventListener("backbutton", _backButtonHandler, false);
+  document.addEventListener("backbutton", _backButtonHandler, false);
 };
 
 CameraPreview.getBlob = function (url, onSuccess, onError) {

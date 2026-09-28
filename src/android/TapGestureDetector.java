@@ -34,18 +34,11 @@ class TapGestureDetector extends GestureDetector.SimpleOnGestureListener impleme
     return true;
   }
 
+  // Only onSingleTapUp is used: onSingleTapConfirmed fires for the same tap ~300ms later and
+  // would trigger a second focus / picture.
   @Override
   public boolean onSingleTapUp(MotionEvent e) {
     Log.d(TAG, "onSingleTapUp: x=" + e.getX() + ", y=" + e.getY());
-    if (onTapListener != null) {
-      onTapListener.onTap(e);
-    }
-    return true;
-  }
-
-  @Override
-  public boolean onSingleTapConfirmed(MotionEvent e) {
-    Log.d(TAG, "onSingleTapConfirmed: x=" + e.getX() + ", y=" + e.getY());
     if (onTapListener != null) {
       onTapListener.onTap(e);
     }

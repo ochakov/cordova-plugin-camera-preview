@@ -2,7 +2,19 @@
 
 ## MASTER BRANCH (RECOMMENDED) - UNRELEASED
 - [View Diff](https://github.com/cordova-plugin-camera-preview/cordova-plugin-camera-preview/compare/v0.14.0...master)
-- Nothing yet
+- **Android: migrated from the deprecated Camera API to Camera2.** Requires Android 6.0 (API 23) or newer.
+- Added `switchFocalLength([zoomFactor])`, `getCurrentFocalLength()` and `getAvailableFocalLengths()` to switch between the ultra wide / wide / telephoto lenses of multi-camera devices (Android and iOS). Lenses are identified by their zoom factor relative to the main camera (e.g. `0.5`, `1`, `2`) on both platforms. The last selected lens is restored by the next `startCamera()`.
+- Added the `fullScreen` option to `startCamera()`.
+- Android: `startCamera`, `switchCamera` and `switchFocalLength` now report success only once the camera is actually streaming, and report an error (instead of crashing) when the camera cannot be opened or a lens cannot be switched to. A failed lens switch falls back to the previous lens.
+- Android: tap to focus now focuses and meters on the tapped point and reports completion once autofocus has settled.
+- Android: flash `auto` / `on` captures run the exposure precapture sequence; switching away from `torch` turns the torch off.
+- Android: color effects, focus modes, white balance modes, exposure lock and exposure compensation are implemented with Camera2 controls and validated against what the device supports.
+- Android: `setZoom` accepts fractional multipliers; `getZoom` / `getMaxZoom` return numbers.
+- Android: video recording no longer breaks zoom, flash, focus and picture taking after it stops; the video size follows the requested `width`/`height` or the device camcorder profile.
+- Android: front camera pictures are mirrored to match the preview in every orientation.
+- Android: removed the `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` permissions (re-introduced by mistake) and the bogus exported `CameraActivity` manifest entry.
+- Android: fixed leaked camera background threads, image reader crashes when switching cameras right after taking a picture, and null pointer crashes in the plugin callbacks.
+- JS: `onBackButton` uses Cordova's `backbutton` event and the listener is removed by `stopCamera()`.
 
 ## v0.14.0 - LATEST RELEASED VERSION
 - [View Diff](https://github.com/cordova-plugin-camera-preview/cordova-plugin-camera-preview/compare/v0.13.0...v0.14.0)
