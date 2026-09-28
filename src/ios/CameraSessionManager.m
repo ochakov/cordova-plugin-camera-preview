@@ -315,6 +315,7 @@ static BOOL hasRestoredFromSavedState = NO;
 }
 
 - (float) getCurrentFocalLength {
+  [self updateCurrentFocalLengthIndex];
   if (self.availableFocalLengths != nil && self.currentFocalLengthIndex >= 0 && self.currentFocalLengthIndex < [self.availableFocalLengths count]) {
     NSNumber *focalLength = [self.availableFocalLengths objectAtIndex:self.currentFocalLengthIndex];
     return [focalLength floatValue];
@@ -423,27 +424,57 @@ static BOOL hasRestoredFromSavedState = NO;
 
   NSArray *devices = discoverySession ? discoverySession.devices : [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
 
-  // Define focal lengths for each camera type
-  NSDictionary *cameraTypeFocalLengths = @{
+  // Fallback zoom factors per camera type, used when the field of view is not reported
+  NSMutableDictionary *cameraTypeFocalLengths = [NSMutableDictionary dictionaryWithDictionary:@{
     AVCaptureDeviceTypeBuiltInWideAngleCamera: @1.0f,
-    AVCaptureDeviceTypeBuiltInTelephotoCamera: @2.0f,
-    AVCaptureDeviceTypeBuiltInUltraWideCamera: @0.5f
-  };
+    AVCaptureDeviceTypeBuiltInTelephotoCamera: @2.0f
+  }];
+  if (@available(iOS 13.0, *)) {
+    cameraTypeFocalLengths[AVCaptureDeviceTypeBuiltInUltraWideCamera] = @0.5f;
+  }
 
-  // Collect available camera devices with their focal lengths
+  // The wide angle camera is the 1.0x reference; other lenses are expressed as a zoom factor
+  // relative to it, computed from the horizontal field of view (same as Android).
+  float wideFieldOfView = 0.0f;
   for (AVCaptureDevice *device in devices) {
-    if ([device position] == self.defaultCamera) {
-      NSString *deviceType = device.deviceType;
-      NSNumber *focalLength = cameraTypeFocalLengths[deviceType];
-
-      if (focalLength) {
-        [focalLengths addObject:focalLength];
-        [self.focalLengthToCameraDevice setObject:device forKey:focalLength];
-        [self.availableCameraDevices addObject:device];
-
-        NSLog(@"Found camera device: %@ with focal length: %@mm", deviceType, focalLength);
-      }
+    if ([device position] == self.defaultCamera &&
+        [device.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera]) {
+      wideFieldOfView = device.activeFormat.videoFieldOfView;
+      break;
     }
+  }
+
+  // Collect available camera devices with their zoom factors
+  for (AVCaptureDevice *device in devices) {
+    if ([device position] != self.defaultCamera) {
+      continue;
+    }
+    NSString *deviceType = device.deviceType;
+    NSNumber *fallbackFactor = cameraTypeFocalLengths[deviceType];
+    if (!fallbackFactor) {
+      continue;
+    }
+
+    float fieldOfView = device.activeFormat.videoFieldOfView;
+    float factor;
+    if (wideFieldOfView > 0.0f && fieldOfView > 0.0f) {
+      factor = tanf(wideFieldOfView * (float)M_PI / 360.0f) / tanf(fieldOfView * (float)M_PI / 360.0f);
+      factor = roundf(factor * 100.0f) / 100.0f;
+    } else {
+      factor = [fallbackFactor floatValue];
+    }
+
+    NSNumber *focalLength = [NSNumber numberWithFloat:factor];
+    if ([self.focalLengthToCameraDevice objectForKey:focalLength] != nil) {
+      NSLog(@"Zoom factor %@ already mapped, skipping %@", focalLength, deviceType);
+      continue;
+    }
+
+    [focalLengths addObject:focalLength];
+    [self.focalLengthToCameraDevice setObject:device forKey:focalLength];
+    [self.availableCameraDevices addObject:device];
+
+    NSLog(@"Found camera device: %@ with zoom factor: %@x (fov %.1f)", deviceType, focalLength, fieldOfView);
   }
 
   // If no devices found with discovery session, use fallback
@@ -452,10 +483,10 @@ static BOOL hasRestoredFromSavedState = NO;
 
     // Fallback: Create virtual focal lengths based on zoom capabilities
     CGFloat maxZoom = self.device.activeFormat.videoMaxZoomFactor;
-    NSInteger numFocalLengths = MIN(3, (NSInteger)maxZoom);
+    NSInteger numFocalLengths = MIN(3, MAX(1, (NSInteger)maxZoom));
 
     for (NSInteger i = 0; i < numFocalLengths; i++) {
-      CGFloat zoomFactor = 1.0 + (i * (maxZoom - 1.0) / (numFocalLengths - 1));
+      CGFloat zoomFactor = numFocalLengths > 1 ? 1.0 + (i * (maxZoom - 1.0) / (numFocalLengths - 1)) : 1.0;
       NSNumber *virtualFocalLength = [NSNumber numberWithFloat:zoomFactor];
       [focalLengths addObject:virtualFocalLength];
       [self.focalLengthToCameraDevice setObject:self.device forKey:virtualFocalLength];
@@ -1099,10 +1130,13 @@ static BOOL hasRestoredFromSavedState = NO;
       self.videoDeviceInput = newVideoDeviceInput;
       self.device = targetDevice;
 
-      // Reset zoom to 1.0 for the new device
+      // Reset zoom to 1.0 for the new device and carry the flash setting over
       if ([targetDevice lockForConfiguration:&error]) {
         targetDevice.videoZoomFactor = 1.0;
         self.videoZoomFactor = 1.0;
+        if ([targetDevice hasFlash] && [targetDevice isFlashModeSupported:self.defaultFlashMode]) {
+          [targetDevice setFlashMode:self.defaultFlashMode];
+        }
         [targetDevice unlockForConfiguration];
       }
 
