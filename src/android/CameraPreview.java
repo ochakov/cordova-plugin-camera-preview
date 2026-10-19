@@ -351,13 +351,18 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       computedHeight = dipToPixels(height, metrics);
     }
 
-    fragment.setRect(computedX, computedY, computedWidth, computedHeight);
-
     startCameraCallbackContext = callbackContext;
 
     cordova.getActivity().runOnUiThread(new Runnable() {
       @Override
       public void run() {
+        // cordova-android 15 draws the window edge-to-edge and keeps only the WebView out of the system bars
+        // (layout margins), so the activity content view, where the container is added below, now starts at
+        // the device top while the x/y received here are web-page coordinates that start below the status
+        // bar. Shift the position by the WebView's offset inside the content view; on older cordova-android
+        // that offset is zero, so nothing changes there.
+        int[] webViewOffset = getWebViewOffsetInContentView();
+        fragment.setRect(computedX + webViewOffset[0], computedY + webViewOffset[1], computedWidth, computedHeight);
 
         //create or update the layout params for the container view
         FrameLayout containerView = (FrameLayout)cordova.getActivity().findViewById(containerViewId);
@@ -424,6 +429,21 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     });
 
     return true;
+  }
+
+  // Left/top offset of the WebView relative to the activity content view (android.R.id.content), i.e. the
+  // sum of the positions of the WebView and its ancestors up to that view. Must run on the UI thread.
+  private int[] getWebViewOffsetInContentView() {
+    int[] offset = new int[2];
+    View contentView = cordova.getActivity().findViewById(android.R.id.content);
+    View current = webView.getView();
+    while (current != null && current != contentView) {
+      offset[0] += current.getLeft();
+      offset[1] += current.getTop();
+      ViewParent parent = current.getParent();
+      current = (parent instanceof View) ? (View) parent : null;
+    }
+    return offset;
   }
 
   public void onCameraStarted() {
