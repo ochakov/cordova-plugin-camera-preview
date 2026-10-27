@@ -18,12 +18,13 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Size;
-import android.util.SparseIntArray;
+import android.view.Gravity;
 import android.view.Surface;
 import android.view.TextureView;
-import android.widget.RelativeLayout;
+import android.widget.FrameLayout;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -36,20 +37,15 @@ import java.util.concurrent.TimeUnit;
  * request goes through {@link #getPreviewRequestBuilder()} + {@link #updatePreviewRequest()} so
  * that there is exactly one session and one builder in play at any time.
  */
-class Preview extends RelativeLayout {
+class Preview extends FrameLayout {
     private static final String TAG = "Preview";
-
-    private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
-    static {
-        ORIENTATIONS.append(Surface.ROTATION_0, 90);
-        ORIENTATIONS.append(Surface.ROTATION_90, 0);
-        ORIENTATIONS.append(Surface.ROTATION_180, 270);
-        ORIENTATIONS.append(Surface.ROTATION_270, 180);
-    }
 
     private static final int MAX_PREVIEW_WIDTH = 1920;
     private static final int MAX_PREVIEW_HEIGHT = 1080;
     private static final long CAMERA_LOCK_TIMEOUT_MS = 2500;
+    // Sizes whose aspect ratio differs by less than this are treated as the same ratio
+    // (1920x1080 vs 1280x720); distinct sensor ratios such as 4:3 and 16:9 are 0.44 apart.
+    private static final double ASPECT_RATIO_TOLERANCE = 0.02;
 
     public interface PreviewCallback {
         /**
@@ -97,6 +93,10 @@ class Preview extends RelativeLayout {
     private volatile CameraCharacteristics mCharacteristics;
     private int mSensorOrientation;
     private boolean mFlashSupported;
+    private boolean mSwappedDimensions;
+    // Container size the current outputs were chosen for (0 until setUpCameraOutputs ran).
+    private int mOutputsWidth;
+    private int mOutputsHeight;
 
     private PreviewCallback mCallback;
 
@@ -105,8 +105,10 @@ class Preview extends RelativeLayout {
         mTextureView = new AutoFitTextureView(context);
         mTextureView.setCoverMode(true);
         mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
-        addView(mTextureView);
-        requestLayout();
+        // In cover mode the texture view is larger than this container in one dimension. Centering
+        // it crops the same amount on both sides; left/top aligned it would show the top-left part
+        // of the frame and cut the rest off on one side.
+        addView(mTextureView, new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER));
     }
 
     public void setPreviewCallback(PreviewCallback callback) {
@@ -130,23 +132,15 @@ class Preview extends RelativeLayout {
         @Override
         public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
             Log.d(TAG, "onSurfaceTextureAvailable - width=" + width + ", height=" + height);
-            openCamera(width, height);
+            openCamera();
         }
 
         @Override
         public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
             Log.d(TAG, "onSurfaceTextureSizeChanged - width=" + width + ", height=" + height);
-            if (mCameraDevice == null || mCharacteristics == null) {
-                // Not open yet: openCamera() will pick the outputs for the final size.
-                return;
-            }
-            Size previous = mPreviewSize;
-            setUpCameraOutputs(width, height);
-            Size current = mPreviewSize;
-            if (previous != null && current != null && !sameAspectRatio(previous, current) && getCaptureSession() != null) {
-                Log.d(TAG, "Preview aspect ratio changed from " + previous + " to " + current + ", recreating session");
-                recreatePreviewSession(null);
-            }
+            // The texture view follows the aspect ratio chosen for the container (onSizeChanged);
+            // here only the display transform has to follow the new texture view size.
+            updateCameraOutputsIfNeeded();
             configureTransform(width, height);
         }
 
@@ -163,7 +157,73 @@ class Preview extends RelativeLayout {
     private static boolean sameAspectRatio(Size a, Size b) {
         double ra = (double) a.getWidth() / a.getHeight();
         double rb = (double) b.getWidth() / b.getHeight();
-        return Math.abs(ra - rb) < 0.01;
+        return Math.abs(ra - rb) < ASPECT_RATIO_TOLERANCE;
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        Log.d(TAG, "onSizeChanged - " + oldw + "x" + oldh + " -> " + w + "x" + h);
+        // Called during layout; do the camera work once the pass is over.
+        post(new Runnable() {
+            @Override
+            public void run() {
+                updateCameraOutputsIfNeeded();
+            }
+        });
+    }
+
+    /** Re-applies the output selection and display transform after a display rotation. */
+    public void onDisplayRotationChanged() {
+        mOutputsWidth = 0;
+        mOutputsHeight = 0;
+        post(new Runnable() {
+            @Override
+            public void run() {
+                updateCameraOutputsIfNeeded();
+            }
+        });
+    }
+
+    /**
+     * Re-selects the preview size for the current container size while the camera is open and
+     * recreates the session when the aspect ratio changed (rotation, setPreviewSize).
+     */
+    private void updateCameraOutputsIfNeeded() {
+        if (mCameraDevice == null || mCharacteristics == null) {
+            // Not open yet: openCamera() picks the outputs for the size at that time.
+            return;
+        }
+        int width = previewAreaWidth();
+        int height = previewAreaHeight();
+        if (width == 0 || height == 0 || (width == mOutputsWidth && height == mOutputsHeight)) {
+            return;
+        }
+        Size previous = mPreviewSize;
+        setUpCameraOutputs(width, height);
+        Size current = mPreviewSize;
+        if (previous != null && current != null && !sameAspectRatio(previous, current) && getCaptureSession() != null) {
+            Log.d(TAG, "Preview aspect ratio changed from " + previous + " to " + current + ", recreating session");
+            recreatePreviewSession(null);
+        }
+        configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+    }
+
+    /**
+     * Width of the area the preview has to cover: this container, as laid out by the plugin. The
+     * texture view is not a usable reference because cover mode already stretched it to the aspect
+     * ratio of the previous camera, which would make every choice depend on the previous one (a
+     * front camera opened by switchCamera after a 16:9 back camera would be forced to 16:9 while
+     * startCamera with the same front camera would pick another ratio).
+     */
+    private int previewAreaWidth() {
+        int width = getWidth();
+        return width > 0 ? width : mTextureView.getWidth();
+    }
+
+    private int previewAreaHeight() {
+        int height = getHeight();
+        return height > 0 ? height : mTextureView.getHeight();
     }
 
     private final CameraDevice.StateCallback mStateCallback = new CameraDevice.StateCallback() {
@@ -273,6 +333,11 @@ class Preview extends RelativeLayout {
         }
     }
 
+    private void openCamera() {
+        openCamera(previewAreaWidth(), previewAreaHeight());
+    }
+
+    /** Opens the current camera for a preview area of the given size (container size). */
     @SuppressLint("MissingPermission")
     private void openCamera(int width, int height) {
         if (!checkPermissions()) {
@@ -296,7 +361,7 @@ class Preview extends RelativeLayout {
             notifyError("Could not configure camera outputs for camera " + mCameraId);
             return;
         }
-        configureTransform(width, height);
+        configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
 
         Activity activity = (Activity) getContext();
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
@@ -377,7 +442,7 @@ class Preview extends RelativeLayout {
 
     public void resumePreview() {
         if (mTextureView.isAvailable()) {
-            openCamera(mTextureView.getWidth(), mTextureView.getHeight());
+            openCamera();
         }
         // Otherwise onSurfaceTextureAvailable() will open the camera once the view is laid out.
     }
@@ -450,17 +515,22 @@ class Preview extends RelativeLayout {
             }
 
             Size previewSize = chooseOptimalSize(choices, rotatedPreviewWidth, rotatedPreviewHeight,
-                    maxPreviewWidth, maxPreviewHeight, new Size(rotatedPreviewWidth, rotatedPreviewHeight));
+                    maxPreviewWidth, maxPreviewHeight);
             mPreviewSize = previewSize;
+            mSwappedDimensions = swappedDimensions;
+            mOutputsWidth = width;
+            mOutputsHeight = height;
 
-            Log.d(TAG, "setUpCameraOutputs - Selected preview size: " + previewSize.getWidth() + "x" + previewSize.getHeight());
+            Log.d(TAG, "setUpCameraOutputs - Selected preview size: " + previewSize.getWidth() + "x" + previewSize.getHeight()
+                    + " for area " + width + "x" + height + (swappedDimensions ? " (swapped)" : ""));
 
             // Fit the aspect ratio of the TextureView to the preview size we picked (cover mode).
-            int orientation = getResources().getConfiguration().orientation;
-            if (orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) {
-                mTextureView.setAspectRatio(previewSize.getWidth(), previewSize.getHeight());
-            } else {
+            // The frame is shown rotated by 90 degrees exactly when the sensor is rotated relative
+            // to the display, which is what swappedDimensions says.
+            if (swappedDimensions) {
                 mTextureView.setAspectRatio(previewSize.getHeight(), previewSize.getWidth());
+            } else {
+                mTextureView.setAspectRatio(previewSize.getWidth(), previewSize.getHeight());
             }
 
             Boolean available = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
@@ -475,57 +545,56 @@ class Preview extends RelativeLayout {
         }
     }
 
-    private static Size chooseOptimalSize(Size[] choices, int textureViewWidth,
-            int textureViewHeight, int maxWidth, int maxHeight, Size aspectRatio) {
-
-        // Collect the supported resolutions that are at least as big as the preview Surface
-        List<Size> bigEnough = new ArrayList<>();
-        // Collect the supported resolutions that are smaller than the preview Surface
-        List<Size> notBigEnough = new ArrayList<>();
-
-        final double ASPECT_TOLERANCE = 0.15;
-        double targetRatio = (double) aspectRatio.getWidth() / aspectRatio.getHeight();
-
+    /**
+     * Picks the preview size for an area of areaWidth x areaHeight (in sensor orientation). Sizes
+     * are capped at maxWidth x maxHeight, the PREVIEW stream size the Camera2 API guarantees next
+     * to a full size JPEG stream. Among the sizes that cover the area without upscaling, the ones
+     * with the aspect ratio closest to the area are kept (smallest cover-mode crop) and the
+     * smallest of them is used; when no size covers the area (full screen on most phones, since
+     * the cap is below the screen size) the closest aspect ratio among all sizes wins and the
+     * largest of them is used. The choice depends only on the area, never on the camera that was
+     * open before.
+     */
+    private static Size chooseOptimalSize(Size[] choices, int areaWidth, int areaHeight, int maxWidth, int maxHeight) {
+        List<Size> allowed = new ArrayList<>();
+        List<Size> covering = new ArrayList<>();
         for (Size option : choices) {
             if (option.getWidth() <= maxWidth && option.getHeight() <= maxHeight) {
-                double ratio = (double) option.getWidth() / option.getHeight();
-                if (Math.abs(ratio - targetRatio) <= ASPECT_TOLERANCE) {
-                    if (option.getWidth() >= textureViewWidth && option.getHeight() >= textureViewHeight) {
-                        bigEnough.add(option);
-                    } else {
-                        notBigEnough.add(option);
-                    }
+                allowed.add(option);
+                if (option.getWidth() >= areaWidth && option.getHeight() >= areaHeight) {
+                    covering.add(option);
                 }
             }
         }
-
-        if (bigEnough.size() > 0) {
-            return Collections.min(bigEnough, new CompareSizesByArea());
-        } else if (notBigEnough.size() > 0) {
-            return Collections.max(notBigEnough, new CompareSizesByArea());
+        if (allowed.isEmpty()) {
+            Log.w(TAG, "No preview size within " + maxWidth + "x" + maxHeight + ", using the smallest available");
+            return Collections.min(Arrays.asList(choices), new CompareSizesByArea());
         }
 
-        // No size matches the aspect ratio: fall back to the best size that fits.
-        Log.w(TAG, "No size found matching aspect ratio, finding best fit");
-        for (Size option : choices) {
-            if (option.getWidth() <= maxWidth && option.getHeight() <= maxHeight) {
-                if (option.getWidth() >= textureViewWidth && option.getHeight() >= textureViewHeight) {
-                    bigEnough.add(option);
-                } else {
-                    notBigEnough.add(option);
-                }
+        List<Size> pool = covering.isEmpty() ? allowed : covering;
+        double targetRatio = (double) areaWidth / areaHeight;
+        double bestDiff = Double.MAX_VALUE;
+        for (Size option : pool) {
+            bestDiff = Math.min(bestDiff, Math.abs((double) option.getWidth() / option.getHeight() - targetRatio));
+        }
+        List<Size> closest = new ArrayList<>();
+        for (Size option : pool) {
+            double diff = Math.abs((double) option.getWidth() / option.getHeight() - targetRatio);
+            if (diff - bestDiff <= ASPECT_RATIO_TOLERANCE) {
+                closest.add(option);
             }
         }
-
-        if (bigEnough.size() > 0) {
-            return Collections.min(bigEnough, new CompareSizesByArea());
-        } else if (notBigEnough.size() > 0) {
-            return Collections.max(notBigEnough, new CompareSizesByArea());
-        }
-        Log.e(TAG, "Couldn't find any suitable preview size, using first available");
-        return choices[0];
+        return covering.isEmpty()
+                ? Collections.max(closest, new CompareSizesByArea())
+                : Collections.min(closest, new CompareSizesByArea());
     }
 
+    /**
+     * Sets the texture view transform for the current display rotation. The camera service
+     * delivers frames upright for the natural device orientation (it rotates by the sensor
+     * orientation); when the display is rotated the content has to be rotated back and scaled so
+     * that it keeps covering the view.
+     */
     private void configureTransform(int viewWidth, int viewHeight) {
         Activity activity = (Activity) getContext();
         Size previewSize = mPreviewSize;
@@ -536,16 +605,22 @@ class Preview extends RelativeLayout {
         int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
         final Matrix matrix = new Matrix();
         RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
-        RectF bufferRect = new RectF(0, 0, previewSize.getHeight(), previewSize.getWidth());
         float centerX = viewRect.centerX();
         float centerY = viewRect.centerY();
 
+        // Frame size as it appears in the natural device orientation.
+        boolean sensorRotated = mSensorOrientation == 90 || mSensorOrientation == 270;
+        int naturalWidth = sensorRotated ? previewSize.getHeight() : previewSize.getWidth();
+        int naturalHeight = sensorRotated ? previewSize.getWidth() : previewSize.getHeight();
+
         if (Surface.ROTATION_90 == rotation || Surface.ROTATION_270 == rotation) {
-            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
-            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
+            // Undo the stretch of the frame onto the view, then scale the rotated frame to cover it.
+            RectF naturalRect = new RectF(0, 0, naturalWidth, naturalHeight);
+            naturalRect.offset(centerX - naturalRect.centerX(), centerY - naturalRect.centerY());
+            matrix.setRectToRect(viewRect, naturalRect, Matrix.ScaleToFit.FILL);
             float scale = Math.max(
-                    (float) viewHeight / previewSize.getHeight(),
-                    (float) viewWidth / previewSize.getWidth());
+                    (float) viewWidth / naturalHeight,
+                    (float) viewHeight / naturalWidth);
             matrix.postScale(scale, scale, centerX, centerY);
             matrix.postRotate(90 * (rotation - 2), centerX, centerY);
         } else if (Surface.ROTATION_180 == rotation) {

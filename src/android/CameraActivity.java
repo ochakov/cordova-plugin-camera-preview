@@ -341,9 +341,17 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
 
         final TapGestureDetector tapGestureDetector = new TapGestureDetector(getActivity(), new TapGestureDetector.OnTapListener() {
             @Override
-            public void onTap(MotionEvent e) {
+            public void onTap(View v, MotionEvent e) {
                 if (tapToFocus) {
-                    setFocus((int) e.getX(), (int) e.getY());
+                    // The texture view receives the touch; report the point relative to the
+                    // preview area like tapToFocus() from JS does.
+                    int pointX = (int) e.getX();
+                    int pointY = (int) e.getY();
+                    if (v != null && v != mPreview) {
+                        pointX += v.getLeft();
+                        pointY += v.getTop();
+                    }
+                    setFocus(pointX, pointY);
                 }
                 if (tapToTakePicture && canTakePicture) {
                     takePicture(0, 0, 85);
@@ -416,6 +424,9 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         super.onConfigurationChanged(newConfig);
         Log.d(TAG, "onConfigurationChanged");
         updatePreviewLayout();
+        if (mPreview != null) {
+            mPreview.onDisplayRotationChanged();
+        }
     }
 
     private void updatePreviewLayout() {
@@ -1229,6 +1240,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     // Tap to focus
     // ---------------------------------------------------------------------------------------------
 
+    /** Focuses on a point given in pixels relative to the preview area (the Preview container). */
     public void setFocus(final int pointX, final int pointY) {
         final Preview preview = mPreview;
         if (preview == null || preview.getCameraDevice() == null) {
@@ -1318,9 +1330,9 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         }
     }
 
-    /** Maps a tap in TextureView coordinates to a sensor-space metering rectangle. */
+    /** Maps a point in preview area coordinates to a sensor-space metering rectangle. */
     private MeteringRectangle computeMeteringRectangle(Preview preview, CameraCharacteristics chars,
-            CaptureRequest.Builder builder, int viewX, int viewY) {
+            CaptureRequest.Builder builder, int pointX, int pointY) {
         TextureView textureView = preview.getTextureView();
         int viewWidth = textureView.getWidth();
         int viewHeight = textureView.getHeight();
@@ -1333,6 +1345,9 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
             crop = sensor;
         }
 
+        // The texture view is centered in the preview area and larger than it in cover mode.
+        int viewX = pointX - textureView.getLeft();
+        int viewY = pointY - textureView.getTop();
         float nx = clamp01(viewX / (float) viewWidth);
         float ny = clamp01(viewY / (float) viewHeight);
 

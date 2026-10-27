@@ -10,9 +10,11 @@ class TapGestureDetector extends GestureDetector.SimpleOnGestureListener impleme
   private final String TAG = "TapGestureDetector";
   private GestureDetector gestureDetector;
   private OnTapListener onTapListener;
+  private View touchedView;
 
   public interface OnTapListener {
-    void onTap(MotionEvent e);
+    /** {@code e} holds coordinates relative to {@code v}, the view that received the touch. */
+    void onTap(View v, MotionEvent e);
   }
 
   public TapGestureDetector(Context context, OnTapListener listener) {
@@ -23,6 +25,7 @@ class TapGestureDetector extends GestureDetector.SimpleOnGestureListener impleme
   @Override
   public boolean onTouch(View v, MotionEvent event) {
     Log.d(TAG, "onTouch: action=" + event.getAction() + ", x=" + event.getX() + ", y=" + event.getY());
+    touchedView = v;
     boolean result = gestureDetector.onTouchEvent(event);
     Log.d(TAG, "onTouch: gestureDetector returned " + result);
     return result;
@@ -40,7 +43,7 @@ class TapGestureDetector extends GestureDetector.SimpleOnGestureListener impleme
   public boolean onSingleTapUp(MotionEvent e) {
     Log.d(TAG, "onSingleTapUp: x=" + e.getX() + ", y=" + e.getY());
     if (onTapListener != null) {
-      onTapListener.onTap(e);
+      onTapListener.onTap(touchedView, e);
     }
     return true;
   }

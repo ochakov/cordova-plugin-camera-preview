@@ -14,6 +14,7 @@
 - Android: front camera pictures are mirrored to match the preview in every orientation.
 - Android: removed the `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` permissions (re-introduced by mistake) and the bogus exported `CameraActivity` manifest entry.
 - Android: fixed leaked camera background threads, image reader crashes when switching cameras right after taking a picture, and null pointer crashes in the plugin callbacks.
+- Android: the preview is centered in its area and its size is chosen for the aspect ratio of that area, independently of the camera that was open before. `switchCamera()`, `switchFocalLength()` and a later `startCamera()` now show the same framing, and the cover-mode crop is split evenly instead of cutting off the right/bottom part of the frame.
 - JS: `onBackButton` uses Cordova's `backbutton` event and the listener is removed by `stopCamera()`.
 
 ## v0.14.0 - LATEST RELEASED VERSION
