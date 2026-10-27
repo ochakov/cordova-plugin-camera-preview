@@ -17,6 +17,7 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
 import android.view.Gravity;
@@ -93,6 +94,10 @@ class Preview extends FrameLayout {
     private final Semaphore mCameraOpenCloseLock = new Semaphore(1);
     private final Object mSessionLock = new Object();
     private volatile boolean mOpening = false;
+    // Camera open waiting for the layout pass (see openCamera).
+    private volatile Runnable mPendingOpen;
+    // Buffer size the preview stream of the current (or being created) session uses.
+    private volatile Size mBufferSize;
     private int mSessionGeneration = 0;
     private boolean mNotifyOpenedOnConfigure = false;
 
@@ -144,6 +149,9 @@ class Preview extends FrameLayout {
 
         @Override
         public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
+            // TextureView has just reset the buffer size to its own size. Put the preview size back
+            // right away in case a session is being created on the camera thread.
+            reapplyBufferSize(texture);
             Log.d(TAG, "onSurfaceTextureSizeChanged - width=" + width + ", height=" + height);
             // The texture view follows the aspect ratio chosen for the container (onSizeChanged);
             // here only the display transform has to follow the new texture view size.
@@ -160,6 +168,13 @@ class Preview extends FrameLayout {
         public void onSurfaceTextureUpdated(SurfaceTexture texture) {
         }
     };
+
+    private void reapplyBufferSize(SurfaceTexture texture) {
+        Size size = mBufferSize;
+        if (size != null && texture != null) {
+            texture.setDefaultBufferSize(size.getWidth(), size.getHeight());
+        }
+    }
 
     private static boolean sameAspectRatio(Size a, Size b) {
         double ra = (double) a.getWidth() / a.getHeight();
@@ -211,10 +226,24 @@ class Preview extends FrameLayout {
         Size current = mPreviewSize;
         if (previous != null && current != null && !sameAspectRatio(previous, current) && getCaptureSession() != null) {
             Log.d(TAG, "Preview aspect ratio changed from " + previous + " to " + current + ", recreating session");
-            recreatePreviewSessionOnCameraThread();
+            recreatePreviewSessionAfterLayout();
         }
         // A session that is still being configured is checked in onPreviewStreamStarted().
         configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+    }
+
+    /**
+     * Recreates the preview session on the camera thread once the pending layout pass is done, so
+     * that the texture view is not resized (which resets its buffer size) while the session is
+     * being created. A message posted after requestLayout() runs after the layout pass.
+     */
+    private void recreatePreviewSessionAfterLayout() {
+        mTextureView.post(new Runnable() {
+            @Override
+            public void run() {
+                recreatePreviewSessionOnCameraThread();
+            }
+        });
     }
 
     private void recreatePreviewSessionOnCameraThread() {
@@ -386,17 +415,42 @@ class Preview extends FrameLayout {
         }
         configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
 
+        // Open once the texture view has been laid out with the shape chosen above. Every resize of
+        // a TextureView resets its SurfaceTexture's buffer size to the view size, and a camera that
+        // opens within a frame (some front cameras open in about 10 ms) would otherwise create its
+        // preview stream while that happens: the stream then gets the view size rounded to some
+        // supported size (4:3 shown in a 16:9 view, i.e. stretched) or the session fails with
+        // "Surface size not compatible". A message posted after requestLayout() runs after the
+        // layout pass.
+        mOpening = true;
+        Runnable open = new Runnable() {
+            @Override
+            public void run() {
+                if (mPendingOpen != this) {
+                    return;
+                }
+                mPendingOpen = null;
+                openCameraDevice();
+            }
+        };
+        mPendingOpen = open;
+        mTextureView.post(open);
+    }
+
+    @SuppressLint("MissingPermission")
+    private void openCameraDevice() {
+        startBackgroundThread();
         Activity activity = (Activity) getContext();
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
 
         boolean acquired = false;
         try {
             if (!mCameraOpenCloseLock.tryAcquire(CAMERA_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                mOpening = false;
                 notifyError("Time out waiting to lock camera opening");
                 return;
             }
             acquired = true;
-            mOpening = true;
             manager.openCamera(mCameraId, mStateCallback, mBackgroundHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Cannot access camera", e);
@@ -411,11 +465,17 @@ class Preview extends FrameLayout {
             notifyError("Cannot open camera " + mCameraId + ": " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            mOpening = false;
             notifyError("Interrupted while trying to lock camera opening");
         }
     }
 
     public void closeCamera() {
+        Runnable pendingOpen = mPendingOpen;
+        mPendingOpen = null;
+        if (pendingOpen != null) {
+            mTextureView.removeCallbacks(pendingOpen);
+        }
         boolean acquired = false;
         try {
             acquired = mCameraOpenCloseLock.tryAcquire(CAMERA_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
@@ -437,6 +497,7 @@ class Preview extends FrameLayout {
                 mPreviewSurface = null;
                 mPreviewSurfaceTexture = null;
             }
+            mBufferSize = null;
             mOpening = false;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -734,6 +795,7 @@ class Preview extends FrameLayout {
         SurfaceTexture texture = mPreviewSurfaceTexture;
         Size size = mPreviewSize;
         if (surface != null && texture != null && size != null) {
+            mBufferSize = size;
             texture.setDefaultBufferSize(size.getWidth(), size.getHeight());
         }
         return surface;
@@ -760,6 +822,7 @@ class Preview extends FrameLayout {
         if (texture == null || previewSize == null) {
             return null;
         }
+        mBufferSize = previewSize;
         texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
         if (mPreviewSurface == null || mPreviewSurfaceTexture != texture || !mPreviewSurface.isValid()) {
             if (mPreviewSurface != null) {
@@ -791,7 +854,12 @@ class Preview extends FrameLayout {
      * Creates (or replaces) the preview capture session with the preview surface plus the given
      * additional surfaces. {@code onReady} runs on the camera thread once the preview is streaming.
      */
-    public void createCameraPreviewSession(List<Surface> additionalSurfaces, final Runnable onReady) {
+    public void createCameraPreviewSession(List<Surface> additionalSurfaces, Runnable onReady) {
+        createCameraPreviewSession(additionalSurfaces, onReady, 0);
+    }
+
+    private void createCameraPreviewSession(final List<Surface> additionalSurfaces, final Runnable onReady,
+            final int attempt) {
         final CameraDevice device = mCameraDevice;
         if (device == null) {
             Log.w(TAG, "createCameraPreviewSession - camera device is not open");
@@ -844,12 +912,35 @@ class Preview extends FrameLayout {
                         onReady.run();
                     } else if (stale) {
                         // Not while a caller (picture, end of recording) uses this session.
-                        recreatePreviewSession(null);
+                        recreatePreviewSessionAfterLayout();
                     }
                 }
 
                 @Override
                 public void onFailed(String error) {
+                    if (attempt == 0 && mCameraDevice == device) {
+                        // Typically the surface changed size during configuration; once more after
+                        // the layout pass before giving up.
+                        Log.w(TAG, error + ", retrying once");
+                        mTextureView.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                Handler handler = mBackgroundHandler;
+                                if (handler == null) {
+                                    return;
+                                }
+                                handler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (mCameraDevice == device) {
+                                            createCameraPreviewSession(additionalSurfaces, onReady, 1);
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                        return;
+                    }
                     notifyError(error);
                 }
             });
@@ -875,14 +966,15 @@ class Preview extends FrameLayout {
                 + ", area " + getWidth() + "x" + getHeight()
                 + ", texture view " + mTextureView.getWidth() + "x" + mTextureView.getHeight()
                 + (mSwappedDimensions ? " (rotated)" : ""));
-        applyAspectRatio(sessionSize);
-        configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
         Size wanted = mPreviewSize;
         if (wanted != null && !sameAspectRatio(wanted, sessionSize)) {
+            // The view is already shaped for the newer choice; the replacement session matches it.
             Log.d(TAG, "Preview size changed to " + wanted + " while the session for " + sessionSize
                     + " was configured");
             return true;
         }
+        applyAspectRatio(sessionSize);
+        configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
         return false;
     }
 
@@ -939,6 +1031,13 @@ class Preview extends FrameLayout {
 
             @Override
             public void onConfigureFailed(CameraCaptureSession session) {
+                synchronized (mSessionLock) {
+                    if (mCameraDevice != device || generation != mSessionGeneration) {
+                        // A newer session (or a closed device) reports its own result.
+                        Log.d(TAG, "Ignoring configure failure of replaced capture session (generation " + generation + ")");
+                        return;
+                    }
+                }
                 Log.e(TAG, "Failed to configure capture session");
                 if (listener != null) listener.onFailed("Failed to configure camera session");
             }
@@ -1044,22 +1143,29 @@ class Preview extends FrameLayout {
             }
             mRatioWidth = width;
             mRatioHeight = height;
-            post(new Runnable() {
-                @Override
-                public void run() {
-                    requestLayout();
-                }
-            });
+            requestLayoutOnUiThread();
         }
 
         public void setCoverMode(boolean coverMode) {
             mCoverMode = coverMode;
-            post(new Runnable() {
-                @Override
-                public void run() {
-                    requestLayout();
-                }
-            });
+            requestLayoutOnUiThread();
+        }
+
+        /**
+         * On the UI thread the layout is requested right away, so that a message posted afterwards
+         * (the camera open, a session recreation) runs after the layout pass.
+         */
+        private void requestLayoutOnUiThread() {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                requestLayout();
+            } else {
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        requestLayout();
+                    }
+                });
+            }
         }
 
         @Override
