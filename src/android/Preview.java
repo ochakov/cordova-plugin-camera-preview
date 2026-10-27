@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.ImageFormat;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
@@ -46,6 +47,12 @@ class Preview extends FrameLayout {
     // Sizes whose aspect ratio differs by less than this are treated as the same ratio
     // (1920x1080 vs 1280x720); distinct sensor ratios such as 4:3 and 16:9 are 0.44 apart.
     private static final double ASPECT_RATIO_TOLERANCE = 0.02;
+    // Preview aspect ratios every camera HAL handles well. CameraX offers only these two for the
+    // same reason: other ratios (such as the 20:9 of a phone screen) and sessions whose streams
+    // have different ratios are stretched instead of cropped by some HALs.
+    private static final double[] STANDARD_RATIOS = {4.0 / 3.0, 16.0 / 9.0};
+    // 1920x1088 and 864x480 still count as 16:9; 5:3 (1.67) and 3:2 (1.5) do not.
+    private static final double STANDARD_RATIO_TOLERANCE = 0.03;
 
     public interface PreviewCallback {
         /**
@@ -204,9 +211,25 @@ class Preview extends FrameLayout {
         Size current = mPreviewSize;
         if (previous != null && current != null && !sameAspectRatio(previous, current) && getCaptureSession() != null) {
             Log.d(TAG, "Preview aspect ratio changed from " + previous + " to " + current + ", recreating session");
-            recreatePreviewSession(null);
+            recreatePreviewSessionOnCameraThread();
         }
+        // A session that is still being configured is checked in onPreviewStreamStarted().
         configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+    }
+
+    private void recreatePreviewSessionOnCameraThread() {
+        Handler handler = mBackgroundHandler;
+        if (handler == null) {
+            return;
+        }
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (mCameraDevice != null) {
+                    recreatePreviewSession(null);
+                }
+            }
+        });
     }
 
     /**
@@ -514,8 +537,8 @@ class Preview extends FrameLayout {
                 maxPreviewHeight = MAX_PREVIEW_HEIGHT;
             }
 
-            Size previewSize = chooseOptimalSize(choices, rotatedPreviewWidth, rotatedPreviewHeight,
-                    maxPreviewWidth, maxPreviewHeight);
+            Size previewSize = choosePreviewSize(choices, map.getOutputSizes(ImageFormat.JPEG),
+                    rotatedPreviewWidth, rotatedPreviewHeight, maxPreviewWidth, maxPreviewHeight);
             mPreviewSize = previewSize;
             mSwappedDimensions = swappedDimensions;
             mOutputsWidth = width;
@@ -524,14 +547,9 @@ class Preview extends FrameLayout {
             Log.d(TAG, "setUpCameraOutputs - Selected preview size: " + previewSize.getWidth() + "x" + previewSize.getHeight()
                     + " for area " + width + "x" + height + (swappedDimensions ? " (swapped)" : ""));
 
-            // Fit the aspect ratio of the TextureView to the preview size we picked (cover mode).
-            // The frame is shown rotated by 90 degrees exactly when the sensor is rotated relative
-            // to the display, which is what swappedDimensions says.
-            if (swappedDimensions) {
-                mTextureView.setAspectRatio(previewSize.getHeight(), previewSize.getWidth());
-            } else {
-                mTextureView.setAspectRatio(previewSize.getWidth(), previewSize.getHeight());
-            }
+            // Fit the aspect ratio of the TextureView to the preview size we picked (cover mode), so
+            // the view has the right shape before the first frame arrives.
+            applyAspectRatio(previewSize);
 
             Boolean available = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
             mFlashSupported = available != null && available;
@@ -542,6 +560,74 @@ class Preview extends FrameLayout {
             Log.e(TAG, "Unknown camera id " + mCameraId, e);
         } catch (NullPointerException e) {
             Log.e(TAG, "Camera2 API not supported on this device", e);
+        }
+    }
+
+    /**
+     * Picks the preview size for an area of areaWidth x areaHeight (in sensor orientation). The
+     * preview gets a standard aspect ratio (4:3 or 16:9) for which the camera also offers a JPEG
+     * size, so that the still stream sharing the session has the same ratio, and among those the
+     * ratio closest to the area. The texture view covers the area and crops the rest. Falls back to
+     * the closest ratio of all sizes when the camera has no 4:3 or 16:9 preview size.
+     */
+    static Size choosePreviewSize(Size[] previewSizes, Size[] jpegSizes, int areaWidth, int areaHeight,
+            int maxWidth, int maxHeight) {
+        double areaRatio = (double) areaWidth / areaHeight;
+        double bestRatio = 0;
+        double bestDiff = Double.MAX_VALUE;
+        boolean bestHasJpeg = false;
+        for (double ratio : STANDARD_RATIOS) {
+            boolean hasPreview = false;
+            for (Size size : previewSizes) {
+                if (size.getWidth() <= maxWidth && size.getHeight() <= maxHeight && hasRatio(size, ratio)) {
+                    hasPreview = true;
+                    break;
+                }
+            }
+            if (!hasPreview) {
+                continue;
+            }
+            boolean hasJpeg = false;
+            if (jpegSizes != null) {
+                for (Size size : jpegSizes) {
+                    if (hasRatio(size, ratio)) {
+                        hasJpeg = true;
+                        break;
+                    }
+                }
+            }
+            double diff = Math.abs(ratio - areaRatio);
+            // A ratio the still stream can match wins over one it cannot, then the closer one.
+            if (bestRatio == 0 || (hasJpeg && !bestHasJpeg) || (hasJpeg == bestHasJpeg && diff < bestDiff)) {
+                bestRatio = ratio;
+                bestDiff = diff;
+                bestHasJpeg = hasJpeg;
+            }
+        }
+        if (bestRatio == 0) {
+            return chooseOptimalSize(previewSizes, areaWidth, areaHeight, maxWidth, maxHeight);
+        }
+        List<Size> matching = new ArrayList<>();
+        for (Size size : previewSizes) {
+            if (hasRatio(size, bestRatio)) {
+                matching.add(size);
+            }
+        }
+        return chooseOptimalSize(matching.toArray(new Size[0]), areaWidth, areaHeight, maxWidth, maxHeight);
+    }
+
+    private static boolean hasRatio(Size size, double ratio) {
+        return Math.abs((double) size.getWidth() / size.getHeight() - ratio) <= STANDARD_RATIO_TOLERANCE;
+    }
+
+    /** Shapes the texture view like the given preview buffer as it is displayed. */
+    private void applyAspectRatio(Size size) {
+        // The frame is shown rotated by 90 degrees exactly when the sensor is rotated relative to
+        // the display, which is what swappedDimensions says.
+        if (mSwappedDimensions) {
+            mTextureView.setAspectRatio(size.getHeight(), size.getWidth());
+        } else {
+            mTextureView.setAspectRatio(size.getWidth(), size.getHeight());
         }
     }
 
@@ -638,6 +724,21 @@ class Preview extends FrameLayout {
         return mPreviewSurface;
     }
 
+    /**
+     * Returns the preview surface for a new session (video recording) after re-applying the preview
+     * buffer size: TextureView resets the default buffer size to its own size whenever it is laid
+     * out again, and the camera sizes a new stream from that default.
+     */
+    public Surface getPreviewSurfaceForSession() {
+        Surface surface = mPreviewSurface;
+        SurfaceTexture texture = mPreviewSurfaceTexture;
+        Size size = mPreviewSize;
+        if (surface != null && texture != null && size != null) {
+            texture.setDefaultBufferSize(size.getWidth(), size.getHeight());
+        }
+        return surface;
+    }
+
     public boolean isTextureViewAvailable() {
         return mTextureView != null && mTextureView.isAvailable();
     }
@@ -650,10 +751,12 @@ class Preview extends FrameLayout {
         return null;
     }
 
-    /** Makes sure mPreviewSurface wraps the current SurfaceTexture. Returns null if unavailable. */
-    private Surface ensurePreviewSurface() {
+    /**
+     * Makes sure mPreviewSurface wraps the current SurfaceTexture and sizes its buffers to
+     * previewSize. Returns null if unavailable.
+     */
+    private Surface ensurePreviewSurface(Size previewSize) {
         SurfaceTexture texture = mTextureView.getSurfaceTexture();
-        Size previewSize = mPreviewSize;
         if (texture == null || previewSize == null) {
             return null;
         }
@@ -695,7 +798,10 @@ class Preview extends FrameLayout {
             return;
         }
         try {
-            Surface previewSurface = ensurePreviewSurface();
+            // The size this session's preview stream is created with; the view follows it once the
+            // stream runs, whatever was chosen meanwhile (onPreviewStreamStarted).
+            final Size sessionSize = mPreviewSize;
+            Surface previewSurface = ensurePreviewSurface(sessionSize);
             if (previewSurface == null) {
                 Log.w(TAG, "createCameraPreviewSession - surface texture not available");
                 return;
@@ -725,7 +831,7 @@ class Preview extends FrameLayout {
             startSession(device, surfaces, builder, new SessionListener() {
                 @Override
                 public void onReady(CameraCaptureSession session) {
-                    configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+                    boolean stale = onPreviewStreamStarted(sessionSize);
                     boolean notifyOpened;
                     synchronized (mSessionLock) {
                         notifyOpened = mNotifyOpenedOnConfigure;
@@ -736,6 +842,9 @@ class Preview extends FrameLayout {
                     }
                     if (onReady != null) {
                         onReady.run();
+                    } else if (stale) {
+                        // Not while a caller (picture, end of recording) uses this session.
+                        recreatePreviewSession(null);
                     }
                 }
 
@@ -754,6 +863,27 @@ class Preview extends FrameLayout {
             Log.e(TAG, "Failed to create camera preview session", e);
             notifyError("Failed to create camera preview session: " + e.getMessage());
         }
+    }
+
+    /**
+     * Called on the camera thread once a preview session streams frames of sessionSize. Shapes the
+     * texture view for that stream and returns true if another aspect ratio was chosen while the
+     * session was being configured (rotation, setPreviewSize), i.e. the session should be replaced.
+     */
+    private boolean onPreviewStreamStarted(final Size sessionSize) {
+        Log.i(TAG, "Preview streaming: camera " + mCameraId + ", preview " + sessionSize
+                + ", area " + getWidth() + "x" + getHeight()
+                + ", texture view " + mTextureView.getWidth() + "x" + mTextureView.getHeight()
+                + (mSwappedDimensions ? " (rotated)" : ""));
+        applyAspectRatio(sessionSize);
+        configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+        Size wanted = mPreviewSize;
+        if (wanted != null && !sameAspectRatio(wanted, sessionSize)) {
+            Log.d(TAG, "Preview size changed to " + wanted + " while the session for " + sessionSize
+                    + " was configured");
+            return true;
+        }
+        return false;
     }
 
     /**

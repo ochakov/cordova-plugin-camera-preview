@@ -1818,7 +1818,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
             reportRecordStartError("Already recording");
             return;
         }
-        final Surface previewSurface = preview.getPreviewSurface();
+        final Surface previewSurface = preview.getPreviewSurfaceForSession();
         if (previewSurface == null || !previewSurface.isValid()) {
             reportRecordStartError("Preview surface not available");
             return;
@@ -2147,12 +2147,19 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     // Size helpers
     // ---------------------------------------------------------------------------------------------
 
+    /**
+     * Picture size for takePicture(width, height): among the JPEG sizes with the aspect ratio
+     * closest to the preview, the smallest one covering the requested size, otherwise the largest.
+     * Keeping the still stream at the preview's ratio matters because the session carries both
+     * streams and some camera HALs stretch the preview when their ratios differ.
+     */
     private Size getOptimalPictureSize(int width, int height, Size previewSize, List<Size> sizes) {
         if (sizes == null || sizes.isEmpty()) {
             return previewSize;
         }
+        List<Size> candidates = closestRatioSizes(sizes.toArray(new Size[0]), previewSize);
         if (width == 0 || height == 0) {
-            return largest(sizes.toArray(new Size[0]));
+            return largest(candidates.toArray(new Size[0]));
         }
 
         // Sensor sizes are landscape; compare in the same orientation.
@@ -2162,7 +2169,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         // Prefer the smallest size that is big enough in both dimensions.
         Size optimalSize = null;
         long minArea = Long.MAX_VALUE;
-        for (Size size : sizes) {
+        for (Size size : candidates) {
             if (size.getWidth() >= wantedWidth && size.getHeight() >= wantedHeight) {
                 long area = (long) size.getWidth() * size.getHeight();
                 if (area < minArea) {
@@ -2173,34 +2180,40 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         }
         // Otherwise the largest available.
         if (optimalSize == null) {
-            optimalSize = largest(sizes.toArray(new Size[0]));
+            optimalSize = largest(candidates.toArray(new Size[0]));
         }
         return optimalSize;
     }
 
-    /** Largest JPEG size whose aspect ratio matches the preview. */
+    /** Largest JPEG size with the aspect ratio closest to the preview's. */
     private Size chooseOptimalPictureSize(Size[] jpegSizes, Size previewSize) {
         if (jpegSizes == null || jpegSizes.length == 0 || previewSize == null) {
             return null;
         }
-        double previewRatio = (double) previewSize.getWidth() / previewSize.getHeight();
-        Size optimalSize = null;
-        long maxArea = 0;
-        for (Size size : jpegSizes) {
-            double ratio = (double) size.getWidth() / size.getHeight();
-            if (Math.abs(ratio - previewRatio) <= ASPECT_TOLERANCE) {
-                long area = (long) size.getWidth() * size.getHeight();
-                if (area > maxArea) {
-                    optimalSize = size;
-                    maxArea = area;
-                }
+        return largest(closestRatioSizes(jpegSizes, previewSize).toArray(new Size[0]));
+    }
+
+    /** The sizes whose aspect ratio is (nearly) the closest to the reference size's. */
+    private static List<Size> closestRatioSizes(Size[] sizes, Size reference) {
+        List<Size> result = new ArrayList<>();
+        if (reference == null) {
+            result.addAll(Arrays.asList(sizes));
+            return result;
+        }
+        double target = (double) reference.getWidth() / reference.getHeight();
+        double bestDiff = Double.MAX_VALUE;
+        for (Size size : sizes) {
+            bestDiff = Math.min(bestDiff, Math.abs((double) size.getWidth() / size.getHeight() - target));
+        }
+        if (bestDiff > 0.03) {
+            Log.w(TAG, "No picture size with the aspect ratio of the preview " + reference + ", using the closest");
+        }
+        for (Size size : sizes) {
+            if (Math.abs((double) size.getWidth() / size.getHeight() - target) - bestDiff <= 0.02) {
+                result.add(size);
             }
         }
-        if (optimalSize == null) {
-            Log.w(TAG, "No JPEG size matches preview aspect ratio, using largest available");
-            optimalSize = largest(jpegSizes);
-        }
-        return optimalSize;
+        return result;
     }
 
     // ---------------------------------------------------------------------------------------------
