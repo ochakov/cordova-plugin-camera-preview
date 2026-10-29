@@ -30,8 +30,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Camera2 preview view. Owns the CameraDevice, the active CameraCaptureSession, the repeating
@@ -44,7 +42,16 @@ class Preview extends FrameLayout {
 
     private static final int MAX_PREVIEW_WIDTH = 1920;
     private static final int MAX_PREVIEW_HEIGHT = 1080;
-    private static final long CAMERA_LOCK_TIMEOUT_MS = 2500;
+    // A camera that is still held by a device of this app being closed (or by a lens switch that
+    // was cancelled while opening) reports "in use"; it is free again shortly after.
+    private static final int MAX_OPEN_RETRIES = 10;
+    private static final long OPEN_RETRY_DELAY_MS = 300;
+
+    // One camera thread for the whole process, never stopped. Callbacks of a camera that is still
+    // opening, configuring or closing when its preview goes away must still be delivered, otherwise
+    // that device is never closed and keeps the camera busy until the app is killed.
+    private static HandlerThread sCameraThread;
+    private static Handler sCameraHandler;
     // Sizes whose aspect ratio differs by less than this are treated as the same ratio
     // (1920x1080 vs 1280x720); distinct sensor ratios such as 4:3 and 16:9 are 0.44 apart.
     private static final double ASPECT_RATIO_TOLERANCE = 0.02;
@@ -89,10 +96,13 @@ class Preview extends FrameLayout {
     private Surface mPreviewSurface;
     private SurfaceTexture mPreviewSurfaceTexture;
     private volatile Size mPreviewSize;
-    private HandlerThread mBackgroundThread;
     private volatile Handler mBackgroundHandler;
-    private final Semaphore mCameraOpenCloseLock = new Semaphore(1);
     private final Object mSessionLock = new Object();
+    // Guards mCameraDevice changes and mDeviceGeneration. Every open attempt and every closeCamera()
+    // starts a new generation; device callbacks of an older generation only close their device.
+    private final Object mDeviceLock = new Object();
+    private int mDeviceGeneration = 0;
+    private volatile int mOpenRetries = 0;
     private volatile boolean mOpening = false;
     // Camera open waiting for the layout pass (see openCamera).
     private volatile Runnable mPendingOpen;
@@ -114,6 +124,7 @@ class Preview extends FrameLayout {
 
     Preview(Context context) {
         super(context);
+        mBackgroundHandler = cameraThreadHandler();
         mTextureView = new AutoFitTextureView(context);
         mTextureView.setCoverMode(true);
         mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
@@ -278,14 +289,32 @@ class Preview extends FrameLayout {
         return height > 0 ? height : mTextureView.getHeight();
     }
 
-    private final CameraDevice.StateCallback mStateCallback = new CameraDevice.StateCallback() {
+    /** Device callback of one open attempt (see mDeviceGeneration). */
+    private final class DeviceStateCallback extends CameraDevice.StateCallback {
+        private final int mGeneration;
+
+        DeviceStateCallback(int generation) {
+            mGeneration = generation;
+        }
+
         @Override
         public void onOpened(CameraDevice cameraDevice) {
+            boolean current;
+            synchronized (mDeviceLock) {
+                current = mGeneration == mDeviceGeneration && mCameraDevice == null;
+                if (current) {
+                    mCameraDevice = cameraDevice;
+                    mOpening = false;
+                }
+            }
+            if (!current) {
+                // Closed or replaced while it was opening (for example a lens switch followed right
+                // away by leaving the camera).
+                Log.d(TAG, "Closing camera " + cameraDevice.getId() + ", it was closed or replaced while opening");
+                closeQuietly(cameraDevice);
+                return;
+            }
             Log.d(TAG, "Camera device opened: " + cameraDevice.getId());
-            // Assign before releasing the lock so a concurrent closeCamera() sees the device.
-            mCameraDevice = cameraDevice;
-            mOpening = false;
-            mCameraOpenCloseLock.release();
 
             List<Surface> additionalSurfaces = null;
             if (mCallback != null) {
@@ -304,11 +333,13 @@ class Preview extends FrameLayout {
         @Override
         public void onDisconnected(CameraDevice cameraDevice) {
             Log.w(TAG, "Camera device disconnected: " + cameraDevice.getId());
-            mOpening = false;
-            mCameraOpenCloseLock.release();
-            boolean wasCurrent = handleDeviceGone(cameraDevice);
-            if (wasCurrent) {
+            int state = releaseDevice(cameraDevice, mGeneration);
+            if (state == DEVICE_ACTIVE) {
+                mOpening = false;
                 notifyError("Camera disconnected");
+            } else if (state == DEVICE_OPENING) {
+                // Taken over while opening: wait for it like for a busy camera.
+                handleOpenFailure("Camera disconnected while opening", true);
             }
         }
 
@@ -316,29 +347,67 @@ class Preview extends FrameLayout {
         public void onError(CameraDevice cameraDevice, int error) {
             String message = "Camera error: " + describeError(error);
             Log.e(TAG, message + " (camera " + cameraDevice.getId() + ")");
-            mOpening = false;
-            mCameraOpenCloseLock.release();
-            handleDeviceGone(cameraDevice);
-            notifyError(message);
+            int state = releaseDevice(cameraDevice, mGeneration);
+            if (state == DEVICE_ACTIVE) {
+                mOpening = false;
+                notifyError(message);
+            } else if (state == DEVICE_OPENING) {
+                boolean busy = error == CameraDevice.StateCallback.ERROR_CAMERA_IN_USE
+                        || error == CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE;
+                handleOpenFailure(message, busy);
+            }
         }
-    };
+    }
 
-    /** Closes a device that reported disconnect/error. Returns true if it was the active device. */
-    private boolean handleDeviceGone(CameraDevice cameraDevice) {
-        boolean wasCurrent = (mCameraDevice == cameraDevice);
-        if (wasCurrent) {
+    private static final int DEVICE_STALE = 0;
+    private static final int DEVICE_OPENING = 1;
+    private static final int DEVICE_ACTIVE = 2;
+
+    /**
+     * Closes a device that reported disconnect or error. Returns DEVICE_ACTIVE if it was the open
+     * device, DEVICE_OPENING if it failed while being opened by the current attempt, otherwise
+     * DEVICE_STALE (an attempt that was already closed or replaced).
+     */
+    private int releaseDevice(CameraDevice cameraDevice, int generation) {
+        boolean active;
+        boolean current;
+        synchronized (mDeviceLock) {
+            current = generation == mDeviceGeneration;
+            active = current && mCameraDevice == cameraDevice;
+            if (active) {
+                mCameraDevice = null;
+            }
+        }
+        if (active) {
             synchronized (mSessionLock) {
                 closeSessionLocked();
                 mPreviewRequestBuilder = null;
             }
-            mCameraDevice = null;
+        }
+        closeQuietly(cameraDevice);
+        return active ? DEVICE_ACTIVE : (current ? DEVICE_OPENING : DEVICE_STALE);
+    }
+
+    private static void closeQuietly(CameraDevice device) {
+        if (device == null) {
+            return;
         }
         try {
-            cameraDevice.close();
+            device.close();
         } catch (Exception e) {
             Log.w(TAG, "Error closing camera device", e);
         }
-        return wasCurrent;
+    }
+
+    private static void closeQuietly(CameraCaptureSession session) {
+        if (session == null) {
+            return;
+        }
+        try {
+            session.close();
+        } catch (Exception e) {
+            Log.w(TAG, "Error closing capture session", e);
+        }
     }
 
     private static String describeError(int error) {
@@ -362,27 +431,18 @@ class Preview extends FrameLayout {
         }
     }
 
-    public synchronized void startBackgroundThread() {
-        if (mBackgroundThread != null && mBackgroundThread.isAlive()) {
-            return;
+    private static synchronized Handler cameraThreadHandler() {
+        if (sCameraThread == null || !sCameraThread.isAlive()) {
+            sCameraThread = new HandlerThread("CameraBackground");
+            sCameraThread.start();
+            sCameraHandler = new Handler(sCameraThread.getLooper());
         }
-        mBackgroundThread = new HandlerThread("CameraBackground");
-        mBackgroundThread.start();
-        mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+        return sCameraHandler;
     }
 
-    public synchronized void stopBackgroundThread() {
-        HandlerThread thread = mBackgroundThread;
-        mBackgroundThread = null;
-        mBackgroundHandler = null;
-        if (thread != null) {
-            thread.quitSafely();
-            try {
-                thread.join(1000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
+    /** Makes sure the (shared, never stopped) camera thread is running. */
+    public void startBackgroundThread() {
+        mBackgroundHandler = cameraThreadHandler();
     }
 
     private void openCamera() {
@@ -423,6 +483,21 @@ class Preview extends FrameLayout {
         // "Surface size not compatible". A message posted after requestLayout() runs after the
         // layout pass.
         mOpening = true;
+        mOpenRetries = 0;
+        scheduleOpen(0);
+    }
+
+    /**
+     * Opens the device on the camera thread, after the pending layout pass (see openCamera) or,
+     * for a retry, after delayMs. CameraManager.openCamera() blocks its thread while the camera
+     * service opens the device, which takes seconds for some lenses, so it does not run on the UI
+     * thread. closeCamera() cancels an open that has not started yet.
+     */
+    private void scheduleOpen(long delayMs) {
+        final int generation;
+        synchronized (mDeviceLock) {
+            generation = mDeviceGeneration;
+        }
         Runnable open = new Runnable() {
             @Override
             public void run() {
@@ -430,92 +505,128 @@ class Preview extends FrameLayout {
                     return;
                 }
                 mPendingOpen = null;
-                openCameraDevice();
+                startBackgroundThread();
+                mBackgroundHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        boolean current;
+                        synchronized (mDeviceLock) {
+                            current = generation == mDeviceGeneration && mOpening;
+                        }
+                        if (current) {
+                            openCameraDevice();
+                        }
+                    }
+                });
             }
         };
         mPendingOpen = open;
-        mTextureView.post(open);
-    }
-
-    @SuppressLint("MissingPermission")
-    private void openCameraDevice() {
-        startBackgroundThread();
-        Activity activity = (Activity) getContext();
-        CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
-
-        boolean acquired = false;
-        try {
-            if (!mCameraOpenCloseLock.tryAcquire(CAMERA_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                mOpening = false;
-                notifyError("Time out waiting to lock camera opening");
-                return;
-            }
-            acquired = true;
-            manager.openCamera(mCameraId, mStateCallback, mBackgroundHandler);
-        } catch (CameraAccessException e) {
-            Log.e(TAG, "Cannot access camera", e);
-            mOpening = false;
-            if (acquired) mCameraOpenCloseLock.release();
-            notifyError("Cannot open camera " + mCameraId + ": " + e.getMessage());
-        } catch (RuntimeException e) {
-            // IllegalArgumentException (unknown id), SecurityException, etc.
-            Log.e(TAG, "Cannot open camera", e);
-            mOpening = false;
-            if (acquired) mCameraOpenCloseLock.release();
-            notifyError("Cannot open camera " + mCameraId + ": " + e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            mOpening = false;
-            notifyError("Interrupted while trying to lock camera opening");
+        if (delayMs > 0) {
+            mTextureView.postDelayed(open, delayMs);
+        } else {
+            mTextureView.post(open);
         }
     }
 
+    /** Runs on the camera thread. */
+    @SuppressLint("MissingPermission")
+    private void openCameraDevice() {
+        final String cameraId = mCameraId;
+        final int generation;
+        synchronized (mDeviceLock) {
+            generation = ++mDeviceGeneration;
+        }
+        Activity activity = (Activity) getContext();
+        CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
+        try {
+            Log.d(TAG, "Opening camera " + cameraId);
+            manager.openCamera(cameraId, new DeviceStateCallback(generation), mBackgroundHandler);
+        } catch (CameraAccessException e) {
+            // The callback of this attempt also gets onError; handle the failure once, here.
+            invalidateGeneration(generation);
+            Log.e(TAG, "Cannot open camera " + cameraId, e);
+            boolean busy = e.getReason() == CameraAccessException.CAMERA_IN_USE
+                    || e.getReason() == CameraAccessException.MAX_CAMERAS_IN_USE;
+            handleOpenFailure("Cannot open camera " + cameraId + ": " + e.getMessage(), busy);
+        } catch (RuntimeException e) {
+            // IllegalArgumentException (unknown id), SecurityException, etc.
+            invalidateGeneration(generation);
+            Log.e(TAG, "Cannot open camera " + cameraId, e);
+            handleOpenFailure("Cannot open camera " + cameraId + ": " + e.getMessage(), false);
+        }
+    }
+
+    private void invalidateGeneration(int generation) {
+        synchronized (mDeviceLock) {
+            if (mDeviceGeneration == generation) {
+                mDeviceGeneration++;
+            }
+        }
+    }
+
+    /** An open attempt failed: retries a busy camera for a while, otherwise reports the error. */
+    private void handleOpenFailure(String message, boolean busy) {
+        if (!mOpening) {
+            return;
+        }
+        if (busy && mOpenRetries < MAX_OPEN_RETRIES) {
+            mOpenRetries++;
+            Log.w(TAG, message + ", retrying (" + mOpenRetries + "/" + MAX_OPEN_RETRIES + ")");
+            scheduleOpen(OPEN_RETRY_DELAY_MS);
+            return;
+        }
+        mOpening = false;
+        notifyError(message);
+    }
+
+    /**
+     * Closes the camera without waiting. A camera that is still opening is closed when it arrives
+     * (see DeviceStateCallback). The device itself is closed on the camera thread: closing blocks
+     * until the camera service has released it, which includes waiting for a session that is still
+     * being configured, and running it there also keeps it ahead of the next open.
+     */
     public void closeCamera() {
         Runnable pendingOpen = mPendingOpen;
         mPendingOpen = null;
         if (pendingOpen != null) {
             mTextureView.removeCallbacks(pendingOpen);
         }
-        boolean acquired = false;
-        try {
-            acquired = mCameraOpenCloseLock.tryAcquire(CAMERA_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            if (!acquired) {
-                Log.w(TAG, "closeCamera - timed out waiting for camera lock, closing anyway");
-            }
-            synchronized (mSessionLock) {
-                closeSessionLocked();
-                mPreviewRequestBuilder = null;
-                mNotifyOpenedOnConfigure = false;
-            }
-            CameraDevice device = mCameraDevice;
+        final CameraDevice device;
+        synchronized (mDeviceLock) {
+            mDeviceGeneration++;
+            device = mCameraDevice;
             mCameraDevice = null;
-            if (device != null) {
-                device.close();
-            }
-            if (mPreviewSurface != null) {
-                mPreviewSurface.release();
-                mPreviewSurface = null;
-                mPreviewSurfaceTexture = null;
-            }
-            mBufferSize = null;
             mOpening = false;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Interrupted while trying to lock camera closing", e);
-        } finally {
-            if (acquired) {
-                mCameraOpenCloseLock.release();
-            }
         }
+        final CameraCaptureSession session;
+        synchronized (mSessionLock) {
+            session = mCaptureSession;
+            mCaptureSession = null;
+            mPreviewRequestBuilder = null;
+            mNotifyOpenedOnConfigure = false;
+            // Sessions still being configured are closed when they report back.
+            mSessionGeneration++;
+        }
+        final Surface surface = mPreviewSurface;
+        mPreviewSurface = null;
+        mPreviewSurfaceTexture = null;
+        mBufferSize = null;
+        startBackgroundThread();
+        mBackgroundHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                closeQuietly(session);
+                closeQuietly(device);
+                if (surface != null) {
+                    surface.release();
+                }
+            }
+        });
     }
 
     private void closeSessionLocked() {
         if (mCaptureSession != null) {
-            try {
-                mCaptureSession.close();
-            } catch (Exception e) {
-                Log.w(TAG, "Error closing capture session", e);
-            }
+            closeQuietly(mCaptureSession);
             mCaptureSession = null;
         }
     }
@@ -533,7 +644,6 @@ class Preview extends FrameLayout {
 
     public void pausePreview() {
         closeCamera();
-        stopBackgroundThread();
     }
 
     private void setUpCameraOutputs(int width, int height) {

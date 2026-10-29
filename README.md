@@ -74,7 +74,7 @@ meteor add cordova:cordova-plugin-camera-preview@X.X.X
 1. The Android implementation uses the Camera2 API and requires Android 6.0 (API 23) or newer.
 2. The hardware back button is delivered through Cordova's `backbutton` document event. Register a listener with <code>[onBackButton](#onBackButton)</code> if you want to react to it; the listener is removed again by `stopCamera()`.
 3. Pictures taken with the front camera are mirrored so they match the preview, unless `disableExifHeaderStripping` is set (in which case the JPEG is returned exactly as the camera produced it).
-4. The last selected lens (see <code>[switchFocalLength](#switchFocalLength)</code>) is remembered and restored by the next `startCamera()` with the same camera direction, so the lens survives rotations that restart the preview.
+4. The last lens that was showing a preview (see <code>[switchFocalLength](#switchFocalLength)</code>) is remembered and restored by the next `startCamera()` with the same camera direction, so the lens survives rotations that restart the preview. A lens switch that has not finished when the camera is stopped is not remembered, and if the remembered lens cannot be opened the main camera of that direction is used.
 5. `takePicture` is not available while a video is being recorded; use `takeSnapshot` instead.
 
 # Methods

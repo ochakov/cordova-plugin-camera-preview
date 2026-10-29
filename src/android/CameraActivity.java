@@ -103,7 +103,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     private static final int MAX_VIDEO_HEIGHT = 1080;
     private static final double ASPECT_TOLERANCE = 0.15;
 
-    private CameraPreviewListener eventListener;
+    private volatile CameraPreviewListener eventListener;
     public FrameLayout frameContainerLayout;
     private Preview mPreview;
     private View view;
@@ -113,9 +113,17 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
 
     // Camera selection
     private volatile String mCameraId;
-    private int cameraCurrentlyLocked = CameraCharacteristics.LENS_FACING_BACK;
-    private String fallbackCameraId;
-    private int fallbackFocalLengthIndex;
+    private volatile int cameraCurrentlyLocked = CameraCharacteristics.LENS_FACING_BACK;
+    // Camera and lens to go back to when the camera being opened cannot be used.
+    private volatile String fallbackCameraId;
+    private volatile int fallbackFacing = -1;
+    private volatile float fallbackFocalLength = -1f;
+    // Set for the fallback of a remembered lens at startCamera(): that revert is not an error.
+    private volatile boolean silentFallback = false;
+    // The camera and lens that last streamed. Only this lens is remembered for the next start.
+    private volatile String workingCameraId;
+    private volatile int workingFacing = -1;
+    private volatile float workingFocalLength = -1f;
 
     // Still capture
     private volatile boolean canTakePicture = false;
@@ -308,9 +316,32 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
 
             cameraCurrentlyLocked = chosenFacing;
             mCameraId = initializeFocalLengths(chosen, chosenFacing);
+            currentZoom = zoomForLens(mCameraId, getCurrentFocalLength());
+            if (mCameraId != null && !mCameraId.equals(chosen)) {
+                // The remembered lens is on another camera of this facing. If that camera cannot be
+                // opened, start the default camera instead of failing startCamera().
+                fallbackCameraId = chosen;
+                fallbackFacing = chosenFacing;
+                fallbackFocalLength = nativeFactorOf(chosen);
+                silentFallback = true;
+            }
         } catch (CameraAccessException e) {
             Log.e(TAG, "Cannot access camera", e);
         }
+    }
+
+    private String firstCameraWithFacing(int facing) {
+        try {
+            for (String cameraId : mCameraManager.getCameraIdList()) {
+                Integer f = getFacing(cameraId);
+                if (f != null && f == facing) {
+                    return cameraId;
+                }
+            }
+        } catch (CameraAccessException e) {
+            Log.w(TAG, "Cannot list cameras", e);
+        }
+        return null;
     }
 
     private Integer getFacing(String cameraId) {
@@ -400,9 +431,8 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         if (mPreview != null) {
             mPreview.pausePreview();
         }
-        // The reader is bound to the camera thread's handler, which is gone now. It is recreated
-        // when the camera is opened again.
-        closeImageReader();
+        // Frees the picture buffers; the reader is recreated when the camera is opened again.
+        closeImageReaderAfterCamera();
         super.onPause();
     }
 
@@ -415,7 +445,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         if (mPreview != null) {
             mPreview.pausePreview();
         }
-        closeImageReader();
+        closeImageReaderAfterCamera();
         super.onDestroyView();
     }
 
@@ -478,7 +508,11 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     @Override
     public void onCameraOpened() {
         Log.d(TAG, "Camera opened - preview session is streaming");
+        workingCameraId = mCameraId;
+        workingFacing = cameraCurrentlyLocked;
+        workingFocalLength = getCurrentFocalLength();
         fallbackCameraId = null;
+        silentFallback = false;
         canTakePicture = true;
         if (eventListener != null) {
             eventListener.onCameraStarted();
@@ -491,28 +525,31 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
 
         final String revertTo = fallbackCameraId;
         if (revertTo != null && !revertTo.equals(mCameraId) && mPreview != null) {
-            // A camera switch failed (typically a hidden lens the OEM does not allow us to open).
-            // Go back to the camera that was working.
+            // A camera switch failed (typically a hidden lens the OEM does not allow us to open),
+            // or the remembered lens could not be opened at start. Go back to the camera that was
+            // working, or to the default camera.
+            final int revertFacing = fallbackFacing;
+            final float revertFactor = fallbackFocalLength;
+            final boolean silent = silentFallback;
             fallbackCameraId = null;
-            final int revertIndex = fallbackFocalLengthIndex;
-            Log.w(TAG, "Switching to camera " + mCameraId + " failed, reverting to " + revertTo);
+            silentFallback = false;
+            Log.w(TAG, "Opening camera " + mCameraId + " failed (" + error + "), reverting to " + revertTo);
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     if (mPreview == null) return;
+                    canTakePicture = false;
+                    focusRegions = null;
                     mPreview.closeCamera();
-                    closeImageReader();
-                    mCameraId = revertTo;
-                    Integer facing = getFacing(revertTo);
-                    if (facing != null) cameraCurrentlyLocked = facing;
-                    if (revertIndex >= 0 && revertIndex < availableFocalLengths.length) {
-                        currentFocalLengthIndex = revertIndex;
-                    }
+                    closeImageReaderAfterCamera();
+                    selectLens(revertTo, revertFacing, revertFactor);
                     mPreview.setCamera(revertTo);
                     mPreview.resumePreview();
                 }
             });
-            notifyCameraError("Failed to switch camera: " + error);
+            if (!silent) {
+                notifyCameraError("Failed to switch camera: " + error);
+            }
             return;
         }
 
@@ -546,7 +583,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                         && (facing == CameraCharacteristics.LENS_FACING_FRONT || facing == CameraCharacteristics.LENS_FACING_BACK)) {
                     int newFacing = facing;
                     String target = initializeFocalLengths(cameraId, newFacing);
-                    switchToCamera(target, newFacing);
+                    switchToCamera(target, newFacing, zoomForLens(target, getCurrentFocalLength()));
                     return true;
                 }
             }
@@ -557,17 +594,23 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         return false;
     }
 
-    private void switchToCamera(String newCameraId, int facing) {
+    private void switchToCamera(String newCameraId, int facing, float zoom) {
         if (mPreview == null) return;
         Log.d(TAG, "Switching from camera " + mCameraId + " to camera " + newCameraId);
         canTakePicture = false;
-        fallbackCameraId = mCameraId;
-        fallbackFocalLengthIndex = currentFocalLengthIndex;
+        if (workingCameraId != null) {
+            // Go back to the camera that last streamed if this one cannot be used. Before the first
+            // camera streamed, the start fallback (if any) stays in place.
+            fallbackCameraId = workingCameraId;
+            fallbackFacing = workingFacing;
+            fallbackFocalLength = workingFocalLength;
+            silentFallback = false;
+        }
         focusRegions = null;
-        currentZoom = 1.0f;
+        currentZoom = zoom;
 
         mPreview.closeCamera();
-        closeImageReader();
+        closeImageReaderAfterCamera();
 
         mCameraId = newCameraId;
         cameraCurrentlyLocked = facing;
@@ -726,10 +769,52 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     }
 
     private void saveFocalLengthState() {
-        if (currentFocalLengthIndex >= 0 && currentFocalLengthIndex < availableFocalLengths.length) {
-            savedFocalLength = availableFocalLengths[currentFocalLengthIndex];
-            savedFacing = cameraCurrentlyLocked;
+        // Only the lens that last streamed is remembered. A lens that was still opening (for example
+        // when the camera is left right after a lens switch), or that could not be opened, would
+        // otherwise be opened again by every following startCamera().
+        if (workingFocalLength > 0 && workingFacing >= 0) {
+            savedFocalLength = workingFocalLength;
+            savedFacing = workingFacing;
         }
+    }
+
+    /** Native zoom factor of a camera relative to the main camera of its facing (1.0 if unknown). */
+    private float nativeFactorOf(String cameraId) {
+        Float factor = cameraId != null ? cameraIdToNativeFactor.get(cameraId) : null;
+        return factor != null && factor > 0 ? factor : 1.0f;
+    }
+
+    /** Digital zoom that shows the lens factor on the given camera. */
+    private float zoomForLens(String cameraId, float factor) {
+        if (factor <= 0) {
+            return 1.0f;
+        }
+        return Math.max(1.0f, factor / nativeFactorOf(cameraId));
+    }
+
+    /**
+     * Points the camera and lens state at cameraId with the given lens factor, rebuilding the lens
+     * table when the facing differs from the current one (a failed front/back switch).
+     */
+    private void selectLens(String cameraId, int facing, float factor) {
+        if (facing >= 0 && (facing != cameraCurrentlyLocked || availableFocalLengths.length == 0)) {
+            String defaultId = firstCameraWithFacing(facing);
+            if (defaultId != null) {
+                initializeFocalLengths(defaultId, facing);
+            }
+        }
+        if (facing >= 0) {
+            cameraCurrentlyLocked = facing;
+        } else {
+            Integer actual = getFacing(cameraId);
+            if (actual != null) cameraCurrentlyLocked = actual;
+        }
+        int index = factor > 0 ? indexOfFactor(factor) : -1;
+        if (index >= 0) {
+            currentFocalLengthIndex = index;
+        }
+        mCameraId = cameraId;
+        currentZoom = zoomForLens(cameraId, getCurrentFocalLength());
     }
 
     /** Cycles to the next lens. Returns one of the LENS_RESULT_* values. */
@@ -766,14 +851,15 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         Log.d(TAG, "Selecting lens " + target + "x (camera " + targetCameraId + ")");
 
         if (targetCameraId != null && !targetCameraId.equals(mCameraId)) {
-            switchToCamera(targetCameraId, cameraCurrentlyLocked);
+            switchToCamera(targetCameraId, cameraCurrentlyLocked, zoomForLens(targetCameraId, target));
             return LENS_RESULT_SWITCHING;
         }
 
         // Same physical camera: emulate the lens with digital zoom relative to its native factor.
-        Float nativeFactor = cameraIdToNativeFactor.get(mCameraId);
-        float zoom = (nativeFactor != null && nativeFactor > 0) ? target / nativeFactor : 1.0f;
-        setZoom(zoom);
+        setZoom(zoomForLens(mCameraId, target));
+        if (mCameraId != null && mCameraId.equals(workingCameraId)) {
+            workingFocalLength = target;
+        }
         return LENS_RESULT_APPLIED;
     }
 
@@ -1459,6 +1545,19 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         synchronized (mImageReaderLock) {
             closeImageReaderLocked();
         }
+    }
+
+    /**
+     * Closes the ImageReader on the camera thread. Preview.closeCamera() closes the device there,
+     * so the reader goes after the camera that writes into it and before the next camera opens.
+     */
+    private void closeImageReaderAfterCamera() {
+        cameraHandler().post(new Runnable() {
+            @Override
+            public void run() {
+                closeImageReader();
+            }
+        });
     }
 
     private void closeImageReaderLocked() {

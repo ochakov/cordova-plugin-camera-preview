@@ -913,6 +913,9 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     if (current == null) {
       return;
     }
+    // A removed fragment can still report late events (a lens that finishes opening, a camera
+    // error). They must not resolve or cancel the callbacks of the next startCamera().
+    current.setEventListener(null);
     cordova.getActivity().runOnUiThread(new Runnable() {
       @Override
       public void run() {
