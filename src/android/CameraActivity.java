@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.Fragment;
 import android.app.FragmentManager;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
@@ -30,6 +31,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -57,9 +59,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class CameraActivity extends Fragment implements Preview.PreviewCallback {
 
@@ -154,6 +158,20 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     private static float savedFocalLength = -1f;
     private static int savedFacing = -1;
 
+    // Hidden cameras the camera service refuses to open on this device (for example physical
+    // cameras that may only be used through their logical camera). Their lenses are shown with
+    // digital zoom on the main camera instead. Kept in the app's preferences for this OS build so
+    // that later app starts do not try them again.
+    private static final Set<String> sUnusableCameraIds = Collections.synchronizedSet(new HashSet<String>());
+    private static boolean sUnusableCamerasLoaded = false;
+    private static final String PREFS_NAME = "cordova-plugin-camera-preview";
+    private static final String PREF_UNUSABLE_CAMERAS = "unusableCameraIds";
+    private static final String PREF_UNUSABLE_CAMERAS_BUILD = "unusableCameraIdsBuild";
+
+    // The lens the lens cycle continues from: the one last asked for, even if it could not be
+    // opened, so that a lens that fails does not stop the cycle.
+    private int lensCycleIndex = -1;
+
     public String defaultCamera;
     public boolean tapToTakePicture;
     public boolean dragEnabled;
@@ -241,6 +259,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
         if (mCameraManager == null) {
             mCameraManager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
         }
+        loadUnusableCameras(activity);
         if (mCameraId == null) {
             setDefaultCameraId();
         }
@@ -520,40 +539,138 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     }
 
     @Override
-    public void onCameraError(String error) {
+    public void onCameraUnavailable(String cameraId, String error) {
+        if (cameraId != null && isHiddenCamera(cameraId)) {
+            markCameraUnusable(cameraId, error);
+        }
+        onCameraError(error);
+    }
+
+    @Override
+    public void onCameraError(final String error) {
         Log.e(TAG, "Camera error: " + error);
 
+        final String failedCameraId = mCameraId;
         final String revertTo = fallbackCameraId;
-        if (revertTo != null && !revertTo.equals(mCameraId) && mPreview != null) {
+        if (revertTo != null && !revertTo.equals(failedCameraId) && mPreview != null) {
             // A camera switch failed (typically a hidden lens the OEM does not allow us to open),
             // or the remembered lens could not be opened at start. Go back to the camera that was
             // working, or to the default camera.
             final int revertFacing = fallbackFacing;
             final float revertFactor = fallbackFocalLength;
             final boolean silent = silentFallback;
+            final int failedFacing = cameraCurrentlyLocked;
+            final float requestedFactor = getCurrentFocalLength();
             fallbackCameraId = null;
             silentFallback = false;
-            Log.w(TAG, "Opening camera " + mCameraId + " failed (" + error + "), reverting to " + revertTo);
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     if (mPreview == null) return;
+                    String target = revertTo;
+                    int targetFacing = revertFacing;
+                    float targetFactor = revertFactor;
+                    boolean emulated = false;
+                    if (failedCameraId != null && sUnusableCameraIds.contains(failedCameraId) && requestedFactor > 0) {
+                        // That camera can never be opened here: rebuild the lenses without it and
+                        // show the lens that was asked for with digital zoom, if a camera can.
+                        String defaultId = firstCameraWithFacing(failedFacing);
+                        if (defaultId != null) {
+                            initializeFocalLengths(defaultId, failedFacing);
+                            cameraCurrentlyLocked = failedFacing;
+                            String emulatedOn = focalLengthToCameraId.get(requestedFactor);
+                            if (emulatedOn != null && !sUnusableCameraIds.contains(emulatedOn)) {
+                                target = emulatedOn;
+                                targetFacing = failedFacing;
+                                targetFactor = requestedFactor;
+                                emulated = true;
+                            }
+                        }
+                    }
+                    Log.w(TAG, "Opening camera " + failedCameraId + " failed (" + error + "), "
+                            + (emulated ? "showing lens " + targetFactor + "x on camera " + target + " with digital zoom"
+                                        : "reverting to camera " + target));
                     canTakePicture = false;
                     focusRegions = null;
                     mPreview.closeCamera();
                     closeImageReaderAfterCamera();
-                    selectLens(revertTo, revertFacing, revertFactor);
-                    mPreview.setCamera(revertTo);
+                    selectLens(target, targetFacing, targetFactor);
+                    if (emulated && !target.equals(revertTo)) {
+                        // Should that camera fail too, go back to the one that was working.
+                        fallbackCameraId = revertTo;
+                        fallbackFacing = revertFacing;
+                        fallbackFocalLength = revertFactor;
+                        silentFallback = silent;
+                    }
+                    mPreview.setCamera(target);
                     mPreview.resumePreview();
+                    if (!silent && !emulated) {
+                        notifyCameraError("Failed to switch camera: " + error);
+                    }
                 }
             });
-            if (!silent) {
-                notifyCameraError("Failed to switch camera: " + error);
-            }
             return;
         }
 
         notifyCameraError(error);
+    }
+
+    private boolean isHiddenCamera(String cameraId) {
+        try {
+            return !Arrays.asList(mCameraManager.getCameraIdList()).contains(cameraId);
+        } catch (CameraAccessException e) {
+            return false;
+        }
+    }
+
+    private void markCameraUnusable(String cameraId, String error) {
+        if (!sUnusableCameraIds.add(cameraId)) {
+            return;
+        }
+        Log.w(TAG, "Camera " + cameraId + " cannot be opened on this device (" + error
+                + "), its lenses use digital zoom on the main camera from now on");
+        Activity activity = getActivity();
+        if (activity == null) {
+            return;
+        }
+        String ids;
+        synchronized (sUnusableCameraIds) {
+            ids = TextUtils.join(",", sUnusableCameraIds);
+        }
+        try {
+            activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                    .putString(PREF_UNUSABLE_CAMERAS_BUILD, Build.FINGERPRINT)
+                    .putString(PREF_UNUSABLE_CAMERAS, ids)
+                    .apply();
+        } catch (Exception e) {
+            Log.w(TAG, "Cannot store the cameras that cannot be opened", e);
+        }
+    }
+
+    private static void loadUnusableCameras(Context context) {
+        synchronized (sUnusableCameraIds) {
+            if (sUnusableCamerasLoaded) {
+                return;
+            }
+            sUnusableCamerasLoaded = true;
+        }
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            // A system update may change which cameras can be opened: try them again then.
+            if (!Build.FINGERPRINT.equals(prefs.getString(PREF_UNUSABLE_CAMERAS_BUILD, null))) {
+                return;
+            }
+            for (String id : prefs.getString(PREF_UNUSABLE_CAMERAS, "").split(",")) {
+                if (!id.isEmpty()) {
+                    sUnusableCameraIds.add(id);
+                }
+            }
+            if (!sUnusableCameraIds.isEmpty()) {
+                Log.d(TAG, "Cameras that cannot be opened on this device: " + sUnusableCameraIds);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Cannot read the cameras that cannot be opened", e);
+        }
     }
 
     private void notifyCameraError(String error) {
@@ -626,11 +743,13 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     private String initializeFocalLengths(String defaultId, int facing) {
         focalLengthToCameraId.clear();
         cameraIdToNativeFactor.clear();
+        lensCycleIndex = -1;
         List<Float> factors = new ArrayList<>();
         String preferredId = defaultId;
 
         try {
             LinkedHashMap<String, CameraCharacteristics> cameras = new LinkedHashMap<>();
+            LinkedHashMap<String, CameraCharacteristics> unusable = new LinkedHashMap<>();
             String[] listed = mCameraManager.getCameraIdList();
             List<String> listedIds = Arrays.asList(listed);
 
@@ -660,6 +779,11 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                     Integer f = chars.get(CameraCharacteristics.LENS_FACING);
                     if (f == null || f != facing) continue;
                     if (!isUsableHiddenCamera(cameraId, chars)) continue;
+                    if (sUnusableCameraIds.contains(cameraId)) {
+                        Log.d(TAG, "Hidden camera " + cameraId + " cannot be opened on this device");
+                        unusable.put(cameraId, chars);
+                        continue;
+                    }
                     Log.d(TAG, "Found hidden camera " + cameraId);
                     cameras.put(cameraId, chars);
                 } catch (Exception e) {
@@ -688,6 +812,29 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
                     }
                     if (!cameraIdToNativeFactor.containsKey(cameraId)) {
                         cameraIdToNativeFactor.put(cameraId, factor);
+                    }
+                }
+            }
+
+            // Lenses of hidden cameras that cannot be opened: digital zoom on the default camera, for
+            // lenses narrower than it and within its digital zoom range.
+            Float maxZoomValue = defaultChars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+            float maxZoom = maxZoomValue != null ? maxZoomValue : 1.0f;
+            Float defaultNativeValue = cameraIdToNativeFactor.get(defaultId);
+            float defaultNative = defaultNativeValue != null && defaultNativeValue > 0 ? defaultNativeValue : 1.0f;
+            for (Map.Entry<String, CameraCharacteristics> entry : unusable.entrySet()) {
+                CameraCharacteristics chars = entry.getValue();
+                float[] focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                SizeF sensor = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+                if (focalLengths == null) continue;
+                for (float focalLength : focalLengths) {
+                    float factor = roundFactor(computeZoomFactor(focalLength, sensor, refFocalLength, refSensor));
+                    float zoom = factor / defaultNative;
+                    if (zoom > 1.01f && zoom <= maxZoom && !focalLengthToCameraId.containsKey(factor)) {
+                        focalLengthToCameraId.put(factor, defaultId);
+                        factors.add(factor);
+                        Log.d(TAG, "Lens " + factor + "x -> camera " + defaultId + " with digital zoom (camera "
+                                + entry.getKey() + " cannot be opened)");
                     }
                 }
             }
@@ -823,7 +970,14 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
             Log.w(TAG, "Cannot switch focal length: only one lens available");
             return LENS_RESULT_UNAVAILABLE;
         }
-        return setFocalLengthIndex((currentFocalLengthIndex + 1) % availableFocalLengths.length);
+        int count = availableFocalLengths.length;
+        int base = lensCycleIndex >= 0 && lensCycleIndex < count ? lensCycleIndex : currentFocalLengthIndex;
+        int next = (base + 1) % count;
+        if (next == currentFocalLengthIndex) {
+            // Coming back from a lens that failed: move on to a lens that is not the current one.
+            next = (next + 1) % count;
+        }
+        return setFocalLengthIndex(next);
     }
 
     /** Switches to the lens closest to the given zoom factor. Returns one of the LENS_RESULT_* values. */
@@ -845,6 +999,7 @@ public class CameraActivity extends Fragment implements Preview.PreviewCallback 
     }
 
     private int setFocalLengthIndex(int index) {
+        lensCycleIndex = index;
         currentFocalLengthIndex = index;
         float target = availableFocalLengths[index];
         String targetCameraId = focalLengthToCameraId.get(target);

@@ -76,6 +76,7 @@ meteor add cordova:cordova-plugin-camera-preview@X.X.X
 3. Pictures taken with the front camera are mirrored so they match the preview, unless `disableExifHeaderStripping` is set (in which case the JPEG is returned exactly as the camera produced it).
 4. The last lens that was showing a preview (see <code>[switchFocalLength](#switchFocalLength)</code>) is remembered and restored by the next `startCamera()` with the same camera direction, so the lens survives rotations that restart the preview. A lens switch that has not finished when the camera is stopped is not remembered, and if the remembered lens cannot be opened the main camera of that direction is used.
 5. `takePicture` is not available while a video is being recorded; use `takeSnapshot` instead.
+6. Lenses are also looked up among cameras that Android does not list (some phones hide their ultra wide or telephoto camera). If the system refuses to open such a camera, its lens is shown with digital zoom on the main camera instead, and this is remembered on the device until the next system update.
 
 # Methods
 

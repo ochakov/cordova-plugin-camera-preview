@@ -81,6 +81,13 @@ class Preview extends FrameLayout {
 
         /** Called when the camera could not be opened, was disconnected, or the session failed. */
         void onCameraError(String error);
+
+        /**
+         * Called instead of onCameraError when the camera service rejects the camera itself (for
+         * example "No camera device with ID available" for a hidden physical camera that may only be
+         * used through its logical camera), so opening it again will not work either.
+         */
+        void onCameraUnavailable(String cameraId, String error);
     }
 
     /** Listener for sessions created with {@link #startCustomSession}. */
@@ -339,7 +346,7 @@ class Preview extends FrameLayout {
                 notifyError("Camera disconnected");
             } else if (state == DEVICE_OPENING) {
                 // Taken over while opening: wait for it like for a busy camera.
-                handleOpenFailure("Camera disconnected while opening", true);
+                handleOpenFailure(cameraDevice.getId(), "Camera disconnected while opening", true, false);
             }
         }
 
@@ -354,7 +361,7 @@ class Preview extends FrameLayout {
             } else if (state == DEVICE_OPENING) {
                 boolean busy = error == CameraDevice.StateCallback.ERROR_CAMERA_IN_USE
                         || error == CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE;
-                handleOpenFailure(message, busy);
+                handleOpenFailure(cameraDevice.getId(), message, busy, false);
             }
         }
     }
@@ -545,14 +552,22 @@ class Preview extends FrameLayout {
             // The callback of this attempt also gets onError; handle the failure once, here.
             invalidateGeneration(generation);
             Log.e(TAG, "Cannot open camera " + cameraId, e);
-            boolean busy = e.getReason() == CameraAccessException.CAMERA_IN_USE
-                    || e.getReason() == CameraAccessException.MAX_CAMERAS_IN_USE;
-            handleOpenFailure("Cannot open camera " + cameraId + ": " + e.getMessage(), busy);
-        } catch (RuntimeException e) {
-            // IllegalArgumentException (unknown id), SecurityException, etc.
+            int reason = e.getReason();
+            boolean busy = reason == CameraAccessException.CAMERA_IN_USE
+                    || reason == CameraAccessException.MAX_CAMERAS_IN_USE;
+            // The camera service rejected the camera itself ("No camera device with ID ... available").
+            boolean unavailable = reason == CameraAccessException.CAMERA_DISCONNECTED
+                    || reason == CameraAccessException.CAMERA_ERROR;
+            handleOpenFailure(cameraId, "Cannot open camera " + cameraId + ": " + e.getMessage(), busy, unavailable);
+        } catch (IllegalArgumentException | SecurityException e) {
+            // Unknown camera id, or a camera this app may not open.
             invalidateGeneration(generation);
             Log.e(TAG, "Cannot open camera " + cameraId, e);
-            handleOpenFailure("Cannot open camera " + cameraId + ": " + e.getMessage(), false);
+            handleOpenFailure(cameraId, "Cannot open camera " + cameraId + ": " + e.getMessage(), false, true);
+        } catch (RuntimeException e) {
+            invalidateGeneration(generation);
+            Log.e(TAG, "Cannot open camera " + cameraId, e);
+            handleOpenFailure(cameraId, "Cannot open camera " + cameraId + ": " + e.getMessage(), false, false);
         }
     }
 
@@ -564,8 +579,11 @@ class Preview extends FrameLayout {
         }
     }
 
-    /** An open attempt failed: retries a busy camera for a while, otherwise reports the error. */
-    private void handleOpenFailure(String message, boolean busy) {
+    /**
+     * An open attempt failed: retries a busy camera for a while, otherwise reports the error, as
+     * onCameraUnavailable when the camera service rejected the camera itself.
+     */
+    private void handleOpenFailure(String cameraId, String message, boolean busy, boolean unavailable) {
         if (!mOpening) {
             return;
         }
@@ -576,6 +594,14 @@ class Preview extends FrameLayout {
             return;
         }
         mOpening = false;
+        if (unavailable && mCallback != null) {
+            try {
+                mCallback.onCameraUnavailable(cameraId, message);
+            } catch (Exception e) {
+                Log.e(TAG, "onCameraUnavailable callback failed", e);
+            }
+            return;
+        }
         notifyError(message);
     }
 
