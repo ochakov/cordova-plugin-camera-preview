@@ -114,6 +114,11 @@ static BOOL hasRestoredFromSavedState = NO;
 
       AVCaptureDevice * videoDevice = [self cameraWithPosition: self.defaultCamera];
 
+      // Configure everything in one batch and start the session only once it is complete. Each
+      // change to a running session is applied on its own and restarts the capture pipeline, which
+      // made the camera take seconds to show its first frame.
+      [self.session beginConfiguration];
+
       if ([videoDevice hasFlash] && [videoDevice isFlashModeSupported:AVCaptureFlashModeAuto]) {
         if ([videoDevice lockForConfiguration:&error]) {
           [videoDevice setFlashMode:AVCaptureFlashModeAuto];
@@ -155,10 +160,16 @@ static BOOL hasRestoredFromSavedState = NO;
       }
 
       [self updateOrientation:[self getCurrentOrientation]];
+      [self.session commitConfiguration];
       self.device = videoDevice;
 
-      // Initialize available focal lengths for the camera
+      // Initialize available focal lengths for the camera. A remembered lens is switched to in
+      // here, before the session runs, so that switch does not restart the pipeline either.
       [self initializeFocalLengths];
+
+      self.sessionConfigured = YES;
+      NSLog(@"Starting session");
+      [self.session startRunning];
 
       completion(success);
   });

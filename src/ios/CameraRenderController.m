@@ -92,8 +92,13 @@
                                              object:nil];
 
   dispatch_async(self.sessionManager.sessionQueue, ^{
-      NSLog(@"Starting session");
-      [self.sessionManager.session startRunning];
+      // setupSession starts the session once it is configured. Starting it here before that would
+      // run it empty and make every input and output added afterwards restart it. This restarts
+      // it when the view appears again after it was stopped.
+      if (self.sessionManager.sessionConfigured) {
+        NSLog(@"Starting session");
+        [self.sessionManager.session startRunning];
+      }
       });
 }
 
@@ -158,8 +163,10 @@
 
 - (void) appplicationIsActive:(NSNotification *)notification {
   dispatch_async(self.sessionManager.sessionQueue, ^{
-      NSLog(@"Starting session");
-      [self.sessionManager.session startRunning];
+      if (self.sessionManager.sessionConfigured) {
+        NSLog(@"Starting session");
+        [self.sessionManager.session startRunning];
+      }
       });
 }
 

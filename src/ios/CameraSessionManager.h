@@ -48,6 +48,9 @@
 @property (nonatomic) NSLock *filterLock;
 @property (nonatomic) AVCaptureSession *session;
 @property (nonatomic) dispatch_queue_t sessionQueue;
+// Set on the session queue once setupSession has added the input and outputs; the session is not
+// started before that.
+@property (nonatomic) BOOL sessionConfigured;
 @property (nonatomic) AVCaptureDevicePosition defaultCamera;
 @property (nonatomic) NSInteger defaultFlashMode;
 @property (nonatomic) CGFloat videoZoomFactor;
