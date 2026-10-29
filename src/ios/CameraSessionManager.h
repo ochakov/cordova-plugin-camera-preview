@@ -1,3 +1,4 @@
+#import <UIKit/UIKit.h>
 #import <CoreImage/CoreImage.h>
 #import <AVFoundation/AVFoundation.h>
 #import "TemperatureAndTint.h"
@@ -42,6 +43,8 @@
 - (BOOL) isTorchActive;
 - (void) setTorchMode;
 - (AVCaptureVideoOrientation) getCurrentOrientation:(UIInterfaceOrientation)toInterfaceOrientation;
+// Interface orientation of the scene showing the view (main thread only).
++ (UIInterfaceOrientation) interfaceOrientationForView:(UIView *)view;
 - (void) saveFocalLengthState;
 
 @property (atomic) CIFilter *ciFilter;
@@ -51,6 +54,9 @@
 // Set on the session queue once setupSession has added the input and outputs; the session is not
 // started before that.
 @property (nonatomic) BOOL sessionConfigured;
+// Interface orientation the capture connections and pictures follow. Read on the main thread
+// (interfaceOrientationForView:) and cached here so the session queue never touches UIKit.
+@property (atomic) UIInterfaceOrientation interfaceOrientation;
 @property (nonatomic) AVCaptureDevicePosition defaultCamera;
 @property (nonatomic) NSInteger defaultFlashMode;
 @property (nonatomic) CGFloat videoZoomFactor;

@@ -16,6 +16,7 @@ static BOOL hasRestoredFromSavedState = NO;
       [self.session setSessionPreset:AVCaptureSessionPresetPhoto];
     }
     self.filterLock = [[NSLock alloc] init];
+    self.interfaceOrientation = UIInterfaceOrientationPortrait;
     self.focalLengthToCameraDevice = [[NSMutableDictionary alloc] init];
     self.availableCameraDevices = [[NSMutableArray alloc] init];
     self.currentFocalLengthIndex = 0;
@@ -75,7 +76,33 @@ static BOOL hasRestoredFromSavedState = NO;
 }
 
 - (AVCaptureVideoOrientation) getCurrentOrientation {
-  return [self getCurrentOrientation: [[UIApplication sharedApplication] statusBarOrientation]];
+  // Cached interface orientation: this runs on the session queue, where UIKit must not be used.
+  return [self getCurrentOrientation:self.interfaceOrientation];
+}
+
++ (UIInterfaceOrientation) interfaceOrientationForView:(UIView *)view {
+  // statusBarOrientation is deprecated since iOS 13 and does not follow the interface reliably in
+  // apps that use scenes; the window scene knows the real interface orientation.
+  if (@available(iOS 13.0, *)) {
+    UIWindowScene *scene = view.window.windowScene;
+    if (scene == nil) {
+      for (UIScene *candidate in [UIApplication sharedApplication].connectedScenes) {
+        if ([candidate isKindOfClass:[UIWindowScene class]]) {
+          scene = (UIWindowScene *)candidate;
+          if (candidate.activationState == UISceneActivationStateForegroundActive) {
+            break;
+          }
+        }
+      }
+    }
+    if (scene != nil && scene.interfaceOrientation != UIInterfaceOrientationUnknown) {
+      return scene.interfaceOrientation;
+    }
+  }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  return [[UIApplication sharedApplication] statusBarOrientation];
+#pragma clang diagnostic pop
 }
 
 - (AVCaptureVideoOrientation) getCurrentOrientation:(UIInterfaceOrientation)toInterfaceOrientation {

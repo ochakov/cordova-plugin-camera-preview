@@ -70,16 +70,17 @@
   }
 
   self.view.userInteractionEnabled = self.dragEnabled || self.tapToTakePicture || self.tapToFocus;
-
-  // Register for orientation changes to handle fullscreen resizing
-  [[NSNotificationCenter defaultCenter] addObserver:self
-                                           selector:@selector(orientationDidChange:)
-                                               name:UIDeviceOrientationDidChangeNotification
-                                             object:nil];
 }
 
 - (void) viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
+
+  // Backup for rotations that do not reach viewWillTransitionToSize (removed in viewWillDisappear).
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(orientationDidChange:)
+                                               name:UIDeviceOrientationDidChangeNotification
+                                             object:nil];
+  [self refreshOrientation];
 
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(appplicationIsActive:)
@@ -257,26 +258,59 @@
   return YES;
 }
 
--(void) willRotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
-  [self.sessionManager updateOrientation:[self.sessionManager getCurrentOrientation:toInterfaceOrientation]];
+// Replaces the deprecated willRotateToInterfaceOrientation:duration:, which no longer reliably
+// reaches a child view controller: the preview kept its portrait capture orientation in landscape.
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+  [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+  [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+    [self updateFullscreenFrameToSize:size];
+    [self refreshOrientation];
+  } completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+    [self updateFullscreenFrameToSize:[[UIScreen mainScreen] bounds].size];
+    [self refreshOrientation];
+  }];
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  [self refreshOrientation];
 }
 
 - (void)orientationDidChange:(NSNotification *)notification {
-  // Handle orientation changes for fullscreen preview
-  // Check if the view frame is set to fullscreen dimensions
-  CGRect screenBounds = [[UIScreen mainScreen] bounds];
-  CGRect currentFrame = self.view.frame;
+  [self updateFullscreenFrameToSize:[[UIScreen mainScreen] bounds].size];
+  [self refreshOrientation];
+}
 
-  // If the view is fullscreen (0,0 position and screen-sized), update it for new orientation
-  if (currentFrame.origin.x == 0 && currentFrame.origin.y == 0) {
-    // Check if dimensions match screen bounds (accounting for orientation change)
-    if ((currentFrame.size.width == screenBounds.size.width && currentFrame.size.height == screenBounds.size.height) ||
-        (currentFrame.size.width == screenBounds.size.height && currentFrame.size.height == screenBounds.size.width)) {
-      // Update frame to match new screen bounds
-      self.view.frame = CGRectMake(0, 0, screenBounds.size.width, screenBounds.size.height);
-      NSLog(@"orientationDidChange - Updated fullscreen preview frame to: %f x %f", screenBounds.size.width, screenBounds.size.height);
-    }
+// A fullscreen preview (at 0,0 and screen-sized in either orientation) follows the screen size.
+- (void)updateFullscreenFrameToSize:(CGSize)size {
+  CGRect currentFrame = self.view.frame;
+  if (currentFrame.origin.x != 0 || currentFrame.origin.y != 0) {
+    return;
   }
+  // Only a preview that covers the screen in the other orientation is resized.
+  if (size.width != size.height && currentFrame.size.width == size.height && currentFrame.size.height == size.width) {
+    self.view.frame = CGRectMake(0, 0, size.width, size.height);
+    NSLog(@"Updated fullscreen preview frame to: %f x %f", size.width, size.height);
+  }
+}
+
+// Points the capture connections at the current interface orientation when it changed, so that the
+// preview frames and pictures are upright in landscape too. Main thread only.
+- (void)refreshOrientation {
+  if (self.sessionManager == nil) {
+    return;
+  }
+  UIInterfaceOrientation orientation = [CameraSessionManager interfaceOrientationForView:self.view];
+  if (orientation == UIInterfaceOrientationUnknown || orientation == self.sessionManager.interfaceOrientation) {
+    return;
+  }
+  NSLog(@"Interface orientation changed to %ld", (long)orientation);
+  self.sessionManager.interfaceOrientation = orientation;
+  AVCaptureVideoOrientation videoOrientation = [self.sessionManager getCurrentOrientation:orientation];
+  CameraSessionManager *sessionManager = self.sessionManager;
+  dispatch_async(sessionManager.sessionQueue, ^{
+    [sessionManager updateOrientation:videoOrientation];
+  });
 }
 
 @end

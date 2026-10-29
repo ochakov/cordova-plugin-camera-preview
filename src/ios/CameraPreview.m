@@ -50,6 +50,10 @@
 
     // Create the session manager
     self.sessionManager = [[CameraSessionManager alloc] init];
+    UIInterfaceOrientation interfaceOrientation = [CameraSessionManager interfaceOrientationForView:self.webView];
+    if (interfaceOrientation != UIInterfaceOrientationUnknown) {
+      self.sessionManager.interfaceOrientation = interfaceOrientation;
+    }
 
     // render controller setup
     self.cameraRenderController = [[CameraRenderController alloc] init];
@@ -699,25 +703,21 @@
   [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
 }
 
-- (double)radiansFromUIImageOrientation:(UIImageOrientation)orientation {
-  double radians;
-
-  switch ([[UIApplication sharedApplication] statusBarOrientation]) {
-    case UIDeviceOrientationPortrait:
-      radians = M_PI_2;
-      break;
-    case UIDeviceOrientationLandscapeLeft:
-      radians = 0.f;
-      break;
-    case UIDeviceOrientationLandscapeRight:
-      radians = M_PI;
-      break;
-    case UIDeviceOrientationPortraitUpsideDown:
-      radians = -M_PI_2;
-      break;
+// Rotation that makes the captured JPEG pixels (which stay in the sensor's landscape right
+// orientation; the connection orientation only goes into the EXIF data, which is not used) upright
+// for the interface orientation the picture was taken in.
+- (double)radiansForInterfaceOrientation:(UIInterfaceOrientation)orientation {
+  switch (orientation) {
+    case UIInterfaceOrientationLandscapeRight:
+      return 0.f;
+    case UIInterfaceOrientationLandscapeLeft:
+      return M_PI;
+    case UIInterfaceOrientationPortraitUpsideDown:
+      return -M_PI_2;
+    case UIInterfaceOrientationPortrait:
+    default:
+      return M_PI_2;
   }
-
-  return radians;
 }
 
 -(CGImageRef) CGImageRotated:(CGImageRef) originalCGImage withRadians:(double) radians {
@@ -772,6 +772,15 @@
 }
 
 - (void) invokeTakePicture:(CGFloat) width withHeight:(CGFloat) height withQuality:(CGFloat) quality{
+    // The orientation at the time of the tap. Off the main thread (take on focus) use the cached one.
+    UIInterfaceOrientation interfaceOrientation = [NSThread isMainThread]
+        ? [CameraSessionManager interfaceOrientationForView:self.webView]
+        : self.sessionManager.interfaceOrientation;
+    if (interfaceOrientation == UIInterfaceOrientationUnknown) {
+      interfaceOrientation = self.sessionManager.interfaceOrientation;
+    }
+    double radians = [self radiansForInterfaceOrientation:interfaceOrientation];
+
     AVCaptureConnection *connection = [self.sessionManager.stillImageOutput connectionWithMediaType:AVMediaTypeVideo];
     [self.sessionManager.stillImageOutput captureStillImageAsynchronouslyFromConnection:connection completionHandler:^(CMSampleBufferRef sampleBuffer, NSError *error) {
 
@@ -804,9 +813,15 @@
         CIImage *imageToFilter;
         CIImage *finalCImage;
 
-        //fix front mirroring
+        //fix front mirroring: mirror along the axis that is horizontal once the picture is rotated
+        //upright (the sensor's short axis in portrait, its long axis in landscape)
         if (self.sessionManager.defaultCamera == AVCaptureDevicePositionFront) {
-          CGAffineTransform matrix = CGAffineTransformTranslate(CGAffineTransformMakeScale(1, -1), 0, capturedCImage.extent.size.height);
+          CGAffineTransform matrix;
+          if (radians == M_PI_2 || radians == -M_PI_2) {
+            matrix = CGAffineTransformTranslate(CGAffineTransformMakeScale(1, -1), 0, capturedCImage.extent.size.height);
+          } else {
+            matrix = CGAffineTransformTranslate(CGAffineTransformMakeScale(-1, 1), -capturedCImage.extent.size.width, 0);
+          }
           imageToFilter = [capturedCImage imageByApplyingTransform:matrix];
         } else {
           imageToFilter = capturedCImage;
@@ -823,9 +838,7 @@
         }
 
         CGImageRef finalImage = [self.cameraRenderController.ciContext createCGImage:finalCImage fromRect:finalCImage.extent];
-        UIImage *resultImage = [UIImage imageWithCGImage:finalImage];
 
-        double radians = [self radiansFromUIImageOrientation:resultImage.imageOrientation];
         CGImageRef resultFinalImage = [self CGImageRotated:finalImage withRadians:radians];
 
         CGImageRelease(finalImage); // release CGImageRef to remove memory leaks
